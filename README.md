@@ -86,7 +86,7 @@ func main() {
 go get github.com/zoobzio/capitan
 ```
 
-Requirements: Go 1.24+
+Requirements: Go 1.23+
 
 ## Core Concepts
 
