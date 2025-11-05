@@ -86,7 +86,7 @@ func main() {
 go get github.com/zoobzio/capitan
 ```
 
-Requirements: Go 1.23+
+Requirements: Go 1.23+ (released August 2024)
 
 ## Core Concepts
 
@@ -122,15 +122,22 @@ listener := capitan.Hook(userLogin, func(ctx context.Context, e *capitan.Event) 
 
 **Observers** watch all signals (dynamic):
 ```go
-// Observe all signals
+// Observe all signals - receives every event
 observer := capitan.Observe(func(ctx context.Context, e *capitan.Event) {
-    // Log all events
+    log.Printf("[%s] %s: %d fields at %s",
+        e.Severity(),
+        e.Signal().Name(),
+        len(e.Fields()),
+        e.Timestamp().Format(time.RFC3339))
 })
 
 // Observe specific signals only (whitelist)
-observer := capitan.Observe(func(ctx context.Context, e *capitan.Event) {
-    // Log only these events
-}, signal1, signal2)
+authObserver := capitan.Observe(func(ctx context.Context, e *capitan.Event) {
+    // Only receives UserLogin, UserLogout, PasswordReset events
+    log.Printf("Auth event: %s by user %s",
+        e.Signal().Name(),
+        mustGetUserID(e))
+}, UserLogin, UserLogout, PasswordReset)
 ```
 
 Observers receive events from both existing signals and any signals created after the observer is registered. This is compatible with lazy signal initialization - observers automatically attach to workers as they're created. When signals are provided to `Observe()`, only those signals are observed (whitelist mode).
@@ -315,9 +322,33 @@ stats := capitan.Stats()
 fmt.Printf("Active workers: %d\n", stats.ActiveWorkers)
 fmt.Printf("Queue depths: %v\n", stats.QueueDepths)
 fmt.Printf("Listener counts: %v\n", stats.ListenerCounts)
+fmt.Printf("Emit counts: %v\n", stats.EmitCounts)
+fmt.Printf("Field schemas: %v\n", stats.FieldSchemas)
 ```
 
 For custom instances, use `c.Stats()`.
+
+**Integration with monitoring systems:**
+
+```go
+// Expose metrics to Prometheus
+func exposeMetrics() {
+    stats := capitan.Stats()
+
+    // Active worker goroutines
+    activeWorkersGauge.Set(float64(stats.ActiveWorkers))
+
+    // Queue depth per signal
+    for signal, depth := range stats.QueueDepths {
+        queueDepthGauge.WithLabelValues(signal.Name()).Set(float64(depth))
+    }
+
+    // Total emits per signal
+    for signal, count := range stats.EmitCounts {
+        emitCountCounter.WithLabelValues(signal.Name()).Set(float64(count))
+    }
+}
+```
 
 ## Multiple Instances
 
@@ -388,6 +419,70 @@ field := e.Get(key)
 if gf, ok := field.(capitan.GenericField[string]); ok {
     value := gf.Get()
 }
+```
+
+### Common Field Patterns
+
+**Error propagation:**
+
+Use `ErrorKey` to propagate errors through events and handle them consistently:
+
+```go
+var (
+    paymentFailed = capitan.NewSignal("payment.failed", "Payment processing failed")
+    errKey        = capitan.NewErrorKey("error")
+    orderID       = capitan.NewStringKey("order_id")
+    userID        = capitan.NewStringKey("user_id")
+)
+
+// Emit error events
+if err := processPayment(order); err != nil {
+    capitan.Error(ctx, paymentFailed,
+        errKey.Field(err),
+        orderID.Field(order.ID),
+        userID.Field(order.UserID),
+    )
+}
+
+// Handle error events
+capitan.Hook(paymentFailed, func(ctx context.Context, e *capitan.Event) {
+    if err, ok := errKey.From(e); ok {
+        log.Printf("Payment failed: %v", err)
+        // Send alert, trigger retry logic, etc.
+    }
+})
+```
+
+**Severity levels:**
+
+Use severity helper methods to indicate event importance:
+
+```go
+// Debug - development and troubleshooting
+capitan.Debug(ctx, signal,
+    capitan.NewStringKey("sql").Field("SELECT * FROM users WHERE id = ?"))
+
+// Info - normal operations (default for Emit)
+capitan.Info(ctx, signal, fields...)
+
+// Warn - warning conditions that need attention
+capitan.Warn(ctx, signal,
+    capitan.NewIntKey("retry_count").Field(3))
+
+// Error - error conditions requiring immediate action
+capitan.Error(ctx, signal,
+    errKey.Field(err))
+```
+
+Filter by severity in observers:
+
+```go
+capitan.Observe(func(ctx context.Context, e *capitan.Event) {
+    // Only log warnings and errors
+    if e.Severity() == capitan.SeverityWarn || e.Severity() == capitan.SeverityError {
+        log.Printf("[%s] %s", e.Severity(), e.Signal().Name())
+    }
+})
 ```
 
 ### Extending with Custom Types
