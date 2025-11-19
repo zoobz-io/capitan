@@ -107,6 +107,16 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 				}
 			}
 
+			// Check if shutdown in progress before creating worker
+			select {
+			case <-c.shutdown:
+				// Shutdown initiated, don't create new workers
+				c.mu.Unlock()
+				return
+			default:
+				// Proceed with worker creation
+			}
+
 			// Create worker only if listeners exist
 			newWorker := &workerState{
 				events: make(chan *Event, c.bufferSize),
@@ -228,7 +238,10 @@ func (c *Capitan) processEvents(signal Signal, state *workerState) {
 // Safe to call multiple times; subsequent calls are no-ops.
 func (c *Capitan) Shutdown() {
 	c.shutdownOnce.Do(func() {
+		// Close shutdown channel while holding mutex to synchronize with worker creation
+		c.mu.Lock()
 		close(c.shutdown)
+		c.mu.Unlock()
 	})
 	c.wg.Wait()
 }

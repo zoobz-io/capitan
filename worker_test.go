@@ -509,3 +509,41 @@ func TestEmitBlockedOnShutdown(t *testing.T) {
 		t.Fatal("Shutdown did not complete")
 	}
 }
+
+// TestEmitDuringShutdownNoWorker tests that emitting to a signal without
+// a worker during shutdown is handled gracefully (worker creation is skipped).
+func TestEmitDuringShutdownNoWorker(t *testing.T) {
+	c := New()
+
+	sig := NewSignal("test.shutdown.noworker", "Test shutdown no worker signal")
+	key := NewStringKey("value")
+
+	var received bool
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		received = true
+	})
+
+	// Call shutdown immediately (no workers created yet)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Goroutine 1: Start shutdown
+	go func() {
+		defer wg.Done()
+		c.Shutdown()
+	}()
+
+	// Goroutine 2: Try to emit (will try to create worker but should abort due to shutdown)
+	go func() {
+		defer wg.Done()
+		time.Sleep(10 * time.Millisecond) // Give shutdown a chance to fire
+		c.Emit(context.Background(), sig, key.Field("test"))
+	}()
+
+	wg.Wait()
+
+	// Event should not be received since worker creation was aborted
+	if received {
+		t.Error("expected event to be dropped during shutdown, but it was received")
+	}
+}
