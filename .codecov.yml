@@ -36,11 +36,11 @@ coverage:
 
 ignore:
   - "**/*_test.go"
-  - "**/testdata/**"
-  - "docs/**"
-  - ".github/**"
-  - "vendor/**"
-  - "examples/**"
+  - "**/testdata/**/*"
+  - "docs/**/*"
+  - ".github/**/*"
+  - "vendor/**/*"
+  - "examples/**/*"
 
 comment:
   layout: "reach,diff,flags,tree"
