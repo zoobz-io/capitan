@@ -1,0 +1,132 @@
+---
+title: Cookbook
+description: Copy-paste recipes for common capitan patterns and use cases.
+author: Capitan Team
+published: 2025-12-01
+tags: [Cookbook, Recipes, Examples]
+---
+
+# Cookbook
+
+Real-world recipes for common capitan patterns.
+
+## Available Recipes
+
+### Event Coordination Patterns
+
+- **[Audit Logging](./audit-logging.md)** ✅ Complete Working Example - Observer-based audit trail with PostgreSQL
+- **[Multi-Tenant Events](./multi-tenant-events.md)** 📘 Pattern Illustration - Tenant-specific event routing and isolation
+- **[Cascading Workflows](./cascading-workflows.md)** 📘 Pattern Illustration - Event-driven workflow orchestration
+- **[Error Handling](./error-handling.md)** 📘 Pattern Illustration - Retry, compensation, and error recovery patterns
+
+## Recipe Types
+
+### ✅ Complete Working Examples
+
+These recipes include all code needed to run immediately:
+- All signals and field keys defined
+- Database schemas included (where applicable)
+- Business logic either complete or clearly stubbed
+- Can be copy-pasted and adapted directly
+
+**Example**: [Audit Logging](./audit-logging.md) includes complete PostgreSQL schema and working audit logger.
+
+### 📘 Pattern Illustrations
+
+These recipes demonstrate event coordination patterns:
+- Show the structure and flow
+- Include signal/field definitions
+- Business logic marked with TODOs for your implementation
+- Require you to add domain-specific logic
+
+**Example**: [Error Handling](./error-handling.md) shows retry patterns with stubs for your API calls.
+
+## How to Use These Recipes
+
+1. **Read the Problem section** - Understand what scenario the recipe solves
+2. **Check the recipe type** - Complete example vs. pattern illustration
+3. **Copy the code** - All recipes are self-contained with imports
+4. **Adapt to your domain**:
+   - For complete examples: Minimal changes needed
+   - For pattern illustrations: Fill in the TODO business logic stubs
+5. **Test** - Each recipe includes testing examples
+
+## Recipe Format
+
+Each recipe includes:
+
+1. **Problem**: What scenario this solves
+2. **Solution**: Complete, compilable Go code with:
+   - Signal definitions (e.g., `var OrderPlaced = capitan.NewSignal(...)`)
+   - Field key definitions (e.g., `var OrderID = capitan.NewStringKey(...)`)
+   - Implementation with clear TODOs for your business logic
+3. **Usage**: How to use the pattern
+4. **Testing**: Testing approaches
+5. **Production Considerations**: Real-world tips
+
+## Pattern vs. Example
+
+```go
+// ✅ Complete Working Example (audit-logging.md)
+// - Compiles and runs as-is
+// - PostgreSQL schema included
+// - Generic enough to use directly
+
+func (al *AuditLogger) logEvent(ctx context.Context, e *capitan.Event) {
+    userID, _ := ctx.Value("user_id").(string)
+    // ... actual implementation
+}
+
+// 📘 Pattern Illustration (error-handling.md)
+// - Shows the pattern structure
+// - You provide the actual API call
+
+func makeAPICall(requestID string) error {
+    // TODO: Implement your actual API call logic
+    return errors.New("not implemented")
+}
+```
+
+## Recipe Validation
+
+All recipes have been validated to compile as standalone Go packages.
+
+### Testing Your Adapted Recipe
+
+After adapting a recipe to your domain:
+
+```go
+// 1. Copy the recipe code to your project
+// 2. Fill in the TODO business logic stubs
+// 3. Verify it compiles
+
+go build ./your-recipe.go
+
+// 4. Run it
+go run ./your-recipe.go
+```
+
+### Common Issues
+
+**"undefined: makeAPICall"**
+- This is a TODO stub you need to implement
+- Look for `// TODO:` comments in the recipe
+
+**"cannot use $1 with MySQL"**
+- The audit-logging recipe uses PostgreSQL syntax
+- For MySQL: change `$1` → `?`, `$2` → `?`, etc.
+- For SQLite: same as MySQL
+
+**"too many open files" or "goroutine leak"**
+- Always call `defer c.Shutdown()` after creating a Capitan instance
+- Always call `defer listener.Close()` after hooking listeners
+
+## Next Steps
+
+- See [Your First Event System](../tutorials/first-event-system.md) for a complete walkthrough
+- Browse [Event Patterns](../guides/patterns.md) for more patterns
+- Read [Best Practices](../guides/best-practices.md) for production tips
+
+## Contributing
+
+Have a useful pattern? Open a PR to add it to the cookbook!

@@ -1,0 +1,407 @@
+---
+title: Audit Logging
+description: Observer-based audit trail that captures all events for compliance and debugging.
+author: Capitan Team
+published: 2025-12-01
+tags: [Cookbook, Audit, Logging, Observer]
+---
+
+# Audit Logging
+
+> **Complete Working Example**: This recipe includes all code needed to implement
+> audit logging with PostgreSQL. Easily adaptable to other databases.
+
+Observer-based audit trail for compliance and debugging.
+
+## Problem
+
+You need to track all events in your system for:
+- Compliance requirements (SOC2, HIPAA, GDPR)
+- Security monitoring
+- Debug tracing
+- User activity tracking
+
+## Solution
+
+```go
+package audit
+
+import (
+    "context"
+    "database/sql"
+    "encoding/json"
+    "log"
+    "time"
+
+    "github.com/zoobzio/capitan"
+)
+
+type AuditLogger struct {
+    db       *sql.DB
+    observer *capitan.Observer
+}
+
+type AuditEntry struct {
+    ID        int64
+    Timestamp time.Time
+    Signal    string
+    Severity  int
+    UserID    string
+    SessionID string
+    IPAddress string
+    Fields    string // JSON
+    CreatedAt time.Time
+}
+
+func NewAuditLogger(db *sql.DB) *AuditLogger {
+    return &AuditLogger{db: db}
+}
+
+func (al *AuditLogger) Start(c *capitan.Capitan) {
+    // Observe ALL events
+    al.observer = c.Observe(al.logEvent)
+}
+
+func (al *AuditLogger) Stop() {
+    if al.observer != nil {
+        al.observer.Close()
+    }
+}
+
+func (al *AuditLogger) logEvent(ctx context.Context, e *capitan.Event) {
+    // Extract user context
+    userID, _ := ctx.Value("user_id").(string)
+    sessionID, _ := ctx.Value("session_id").(string)
+    ipAddress, _ := ctx.Value("ip_address").(string)
+
+    // Serialize fields
+    fieldsJSON, err := json.Marshal(e.Fields())
+    if err != nil {
+        log.Printf("Error serializing audit fields: %v", err)
+        fieldsJSON = []byte("{}")
+    }
+
+    // Save to database
+    _, err = al.db.ExecContext(ctx, `
+        INSERT INTO audit_log (
+            timestamp, signal, severity, user_id, session_id, ip_address, fields, created_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `,
+        e.Timestamp(),
+        e.Signal().Name(),
+        int(e.Severity()),
+        userID,
+        sessionID,
+        ipAddress,
+        string(fieldsJSON),
+        time.Now(),
+    )
+
+    if err != nil {
+        log.Printf("Error saving audit entry: %v", err)
+    }
+}
+
+// Query audit log
+func (al *AuditLogger) GetUserActivity(userID string, since time.Time) ([]AuditEntry, error) {
+    rows, err := al.db.Query(`
+        SELECT id, timestamp, signal, severity, user_id, session_id, ip_address, fields, created_at
+        FROM audit_log
+        WHERE user_id = $1 AND timestamp >= $2
+        ORDER BY timestamp DESC
+    `, userID, since)
+
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    var entries []AuditEntry
+    for rows.Next() {
+        var e AuditEntry
+        err := rows.Scan(&e.ID, &e.Timestamp, &e.Signal, &e.Severity, &e.UserID, &e.SessionID, &e.IPAddress, &e.Fields, &e.CreatedAt)
+        if err != nil {
+            return nil, err
+        }
+        entries = append(entries, e)
+    }
+
+    return entries, rows.Err()
+}
+```
+
+## Database Schema
+
+```sql
+CREATE TABLE audit_log (
+    id         BIGSERIAL PRIMARY KEY,
+    timestamp  TIMESTAMPTZ NOT NULL,
+    signal     VARCHAR(255) NOT NULL,
+    severity   INTEGER NOT NULL,
+    user_id    VARCHAR(255),
+    session_id VARCHAR(255),
+    ip_address VARCHAR(45),
+    fields     JSONB,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexes for common queries
+CREATE INDEX idx_audit_log_user_id ON audit_log(user_id, timestamp DESC);
+CREATE INDEX idx_audit_log_signal ON audit_log(signal, timestamp DESC);
+CREATE INDEX idx_audit_log_timestamp ON audit_log(timestamp DESC);
+CREATE INDEX idx_audit_log_severity ON audit_log(severity, timestamp DESC) WHERE severity >= 3;
+```
+
+## Usage
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "log"
+
+    "github.com/zoobzio/capitan"
+    "your-app/audit"
+    "your-app/events"
+    "your-app/fields"
+)
+
+func main() {
+    // Create capitan
+    c := capitan.New()
+    defer c.Shutdown()
+
+    // Setup database
+    db, err := sql.Open("postgres", "postgres://...")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer db.Close()
+
+    // Start audit logger
+    auditLogger := audit.NewAuditLogger(db)
+    auditLogger.Start(c)
+    defer auditLogger.Stop()
+
+    // Create context with user info
+    ctx := context.Background()
+    ctx = context.WithValue(ctx, "user_id", "user-123")
+    ctx = context.WithValue(ctx, "session_id", "sess-456")
+    ctx = context.WithValue(ctx, "ip_address", "192.168.1.100")
+
+    // Emit events - all automatically logged
+    c.Emit(ctx, events.UserLogin,
+        fields.UserID.Field("user-123"),
+        fields.Timestamp.Field(time.Now()),
+    )
+
+    c.Emit(ctx, events.OrderPlaced,
+        fields.OrderID.Field("ord-789"),
+        fields.Amount.Field(9999),
+    )
+
+    // Query audit log
+    entries, err := auditLogger.GetUserActivity("user-123", time.Now().Add(-24*time.Hour))
+    if err != nil {
+        log.Printf("Error querying audit log: %v", err)
+    }
+
+    for _, entry := range entries {
+        log.Printf("[AUDIT] %s: %s by %s", entry.Timestamp, entry.Signal, entry.UserID)
+    }
+}
+```
+
+## Selective Audit Logging
+
+Only audit security-sensitive events:
+
+```go
+func (al *AuditLogger) Start(c *capitan.Capitan) {
+    // Whitelist security-relevant signals
+    securitySignals := []capitan.Signal{
+        events.UserLogin,
+        events.UserLoginFailed,
+        events.UserLogout,
+        events.PasswordChanged,
+        events.PermissionGranted,
+        events.PermissionDenied,
+        events.DataExported,
+        events.ConfigChanged,
+        events.AdminAction,
+    }
+
+    al.observer = c.Observe(al.logEvent, securitySignals...)
+}
+```
+
+## Testing
+
+```go
+package audit_test
+
+import (
+    "context"
+    "database/sql"
+    "testing"
+    "time"
+
+    "github.com/stretchr/testify/assert"
+    "github.com/stretchr/testify/require"
+    "github.com/zoobzio/capitan"
+    "your-app/audit"
+    "your-app/events"
+    "your-app/fields"
+
+    _ "github.com/mattn/go-sqlite3"
+)
+
+func TestAuditLogger(t *testing.T) {
+    // Setup in-memory database
+    db, err := sql.Open("sqlite3", ":memory:")
+    require.NoError(t, err)
+    defer db.Close()
+
+    // Create schema
+    _, err = db.Exec(`
+        CREATE TABLE audit_log (
+            id         INTEGER PRIMARY KEY,
+            timestamp  TEXT NOT NULL,
+            signal     TEXT NOT NULL,
+            severity   INTEGER NOT NULL,
+            user_id    TEXT,
+            session_id TEXT,
+            ip_address TEXT,
+            fields     TEXT,
+            created_at TEXT NOT NULL
+        )
+    `)
+    require.NoError(t, err)
+
+    // Setup capitan and audit logger
+    c := capitan.New()
+    defer c.Shutdown()
+
+    auditLogger := audit.NewAuditLogger(db)
+    auditLogger.Start(c)
+    defer auditLogger.Stop()
+
+    // Create context with user info
+    ctx := context.WithValue(context.Background(), "user_id", "test-user")
+
+    // Emit event
+    c.Emit(ctx, events.UserLogin,
+        fields.UserID.Field("test-user"),
+    )
+
+    // Shutdown to ensure event is processed
+    c.Shutdown()
+
+    // Query audit log
+    entries, err := auditLogger.GetUserActivity("test-user", time.Now().Add(-1*time.Hour))
+    require.NoError(t, err)
+    require.Equal(t, 1, len(entries))
+
+    // Verify entry
+    assert.Equal(t, "user.login", entries[0].Signal)
+    assert.Equal(t, "test-user", entries[0].UserID)
+}
+```
+
+## Production Considerations
+
+### 1. Async Logging
+
+For high-throughput systems, queue audit entries:
+
+```go
+type AsyncAuditLogger struct {
+    db    *sql.DB
+    queue chan AuditEntry
+}
+
+func (aal *AsyncAuditLogger) Start(c *capitan.Capitan) {
+    aal.queue = make(chan AuditEntry, 1000)
+
+    // Background worker
+    go aal.worker()
+
+    // Observer just queues
+    c.Observe(aal.queueEvent)
+}
+
+func (aal *AsyncAuditLogger) queueEvent(ctx context.Context, e *capitan.Event) {
+    entry := AuditEntry{
+        Timestamp: e.Timestamp(),
+        Signal:    e.Signal().Name(),
+        // ... extract fields
+    }
+
+    select {
+    case aal.queue <- entry:
+    default:
+        log.Println("Audit queue full, dropping entry")
+    }
+}
+
+func (aal *AsyncAuditLogger) worker() {
+    for entry := range aal.queue {
+        aal.db.Exec(`INSERT INTO ...`, entry)
+    }
+}
+```
+
+### 2. Sanitize Sensitive Data
+
+```go
+func (al *AuditLogger) logEvent(ctx context.Context, e *capitan.Event) {
+    // Filter sensitive fields
+    var sanitizedFields []capitan.Field
+    for _, field := range e.Fields() {
+        if field.Key == "password" || field.Key == "credit_card" {
+            continue // Don't log sensitive data
+        }
+        sanitizedFields = append(sanitizedFields, field)
+    }
+
+    fieldsJSON, _ := json.Marshal(sanitizedFields)
+    // ...
+}
+```
+
+### 3. Retention Policy
+
+```sql
+-- Delete old audit logs
+DELETE FROM audit_log WHERE created_at < NOW() - INTERVAL '90 days';
+
+-- Or archive to cold storage
+INSERT INTO audit_log_archive SELECT * FROM audit_log WHERE created_at < NOW() - INTERVAL '90 days';
+DELETE FROM audit_log WHERE created_at < NOW() - INTERVAL '90 days';
+```
+
+### 4. Monitor Queue Depth
+
+```go
+go func() {
+    ticker := time.NewTicker(10 * time.Second)
+    defer ticker.Stop()
+
+    for range ticker.C {
+        depth := len(aal.queue)
+        metrics.Gauge("audit.queue.depth", float64(depth))
+
+        if depth > 800 {
+            log.Printf("Warning: Audit queue depth is %d", depth)
+        }
+    }
+}()
+```
+
+## Next Steps
+
+- [Multi-Tenant Events](./multi-tenant-events.md) - Tenant-specific event routing
+- [Error Handling](./error-handling.md) - Retry and compensation patterns
+- [Observers Guide](../guides/observers.md) - Advanced observer patterns

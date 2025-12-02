@@ -1,0 +1,440 @@
+---
+title: Field Types Reference
+description: Complete reference for all typed field keys in capitan.
+author: Capitan Team
+published: 2025-12-01
+tags: [Reference, Fields, Types]
+---
+
+# Field Types Reference
+
+Complete reference for typed event fields.
+
+## Overview
+
+Capitan provides strongly-typed field keys for compile-time safety. Each key type has three methods:
+
+1. **Field(value)** - Create a field with a value
+2. **Extract(event)** - Extract value from an event
+3. **ExtractFromFields(fields)** - Extract value from a field slice
+
+## String Fields
+
+### StringKey
+
+For text values.
+
+```go
+func NewStringKey(name string) StringKey
+```
+
+**Methods**:
+```go
+func (k StringKey) Field(value string) Field
+func (k StringKey) Extract(e *Event) string
+func (k StringKey) ExtractFromFields(fields []Field) string
+```
+
+**Example**:
+```go
+var UserID = capitan.NewStringKey("user_id")
+
+// Create field
+c.Emit(ctx, signal, UserID.Field("user-123"))
+
+// Extract from event
+c.Hook(signal, func(ctx context.Context, e *Event) {
+    userID := UserID.Extract(e) // string
+    log.Printf("User: %s", userID)
+})
+
+// Extract from fields
+fields := event.Fields()
+userID := UserID.ExtractFromFields(fields)
+```
+
+**Common Uses**:
+- IDs: `user_id`, `order_id`, `session_id`
+- Names: `username`, `email`, `product_name`
+- Status: `order_status`, `payment_status`
+- Messages: `error_message`, `description`
+
+## Integer Fields
+
+### IntKey
+
+For whole numbers (int type).
+
+```go
+func NewIntKey(name string) IntKey
+```
+
+**Methods**:
+```go
+func (k IntKey) Field(value int) Field
+func (k IntKey) Extract(e *Event) int
+func (k IntKey) ExtractFromFields(fields []Field) int
+```
+
+**Example**:
+```go
+var Amount = capitan.NewIntKey("amount")
+
+// Emit with amount in cents
+c.Emit(ctx, orderPlaced, Amount.Field(9999)) // $99.99
+
+// Extract
+amount := Amount.Extract(event)
+dollars := float64(amount) / 100
+```
+
+**Common Uses**:
+- Money (in cents): `amount`, `price`, `fee`
+- Counts: `quantity`, `retry_count`, `user_count`
+- IDs (numeric): `user_id`, `order_id`
+
+## Float Fields
+
+### FloatKey
+
+For decimal numbers (float64 type).
+
+```go
+func NewFloatKey(name string) FloatKey
+```
+
+**Methods**:
+```go
+func (k FloatKey) Field(value float64) Field
+func (k FloatKey) Extract(e *Event) float64
+func (k FloatKey) ExtractFromFields(fields []Field) float64
+```
+
+**Example**:
+```go
+var Score = capitan.NewFloatKey("score")
+
+c.Emit(ctx, userScored, Score.Field(98.5))
+
+score := Score.Extract(event) // 98.5
+```
+
+**Common Uses**:
+- Ratings: `rating`, `score`, `confidence`
+- Percentages: `completion_percentage`, `discount_rate`
+- Metrics: `latency_seconds`, `throughput_mbps`
+
+## Boolean Fields
+
+### BoolKey
+
+For true/false values.
+
+```go
+func NewBoolKey(name string) BoolKey
+```
+
+**Methods**:
+```go
+func (k BoolKey) Field(value bool) Field
+func (k BoolKey) Extract(e *Event) bool
+func (k BoolKey) ExtractFromFields(fields []Field) bool
+```
+
+**Example**:
+```go
+var IsVerified = capitan.NewBoolKey("is_verified")
+
+c.Emit(ctx, userRegistered, IsVerified.Field(true))
+
+if IsVerified.Extract(event) {
+    log.Println("User is verified")
+}
+```
+
+**Common Uses**:
+- Flags: `is_active`, `is_verified`, `is_premium`
+- Status: `success`, `enabled`, `completed`
+
+## Time Fields
+
+### TimeKey
+
+For timestamps (time.Time type).
+
+```go
+func NewTimeKey(name string) TimeKey
+```
+
+**Methods**:
+```go
+func (k TimeKey) Field(value time.Time) Field
+func (k TimeKey) Extract(e *Event) time.Time
+func (k TimeKey) ExtractFromFields(fields []Field) time.Time
+```
+
+**Example**:
+```go
+var CreatedAt = capitan.NewTimeKey("created_at")
+
+c.Emit(ctx, orderPlaced,
+    orderIDKey.Field("ord-123"),
+    CreatedAt.Field(time.Now()),
+)
+
+createdAt := CreatedAt.Extract(event)
+age := time.Since(createdAt)
+log.Printf("Order age: %v", age)
+```
+
+**Common Uses**:
+- Timestamps: `created_at`, `updated_at`, `expires_at`
+- Deadlines: `due_date`, `scheduled_at`
+
+## Duration Fields
+
+### DurationKey
+
+For time spans (time.Duration type).
+
+```go
+func NewDurationKey(name string) DurationKey
+```
+
+**Methods**:
+```go
+func (k DurationKey) Field(value time.Duration) Field
+func (k DurationKey) Extract(e *Event) time.Duration
+func (k DurationKey) ExtractFromFields(fields []Field) time.Duration
+```
+
+**Example**:
+```go
+var Timeout = capitan.NewDurationKey("timeout")
+
+c.Emit(ctx, requestStarted, Timeout.Field(5*time.Second))
+
+timeout := Timeout.Extract(event)
+ctx, cancel := context.WithTimeout(ctx, timeout)
+defer cancel()
+```
+
+**Common Uses**:
+- Timeouts: `timeout`, `deadline_duration`
+- Intervals: `retry_interval`, `cache_ttl`
+- Latency: `processing_duration`, `response_time`
+
+## Any Fields
+
+### AnyKey
+
+For arbitrary types (loses type safety).
+
+```go
+func NewAnyKey(name string) AnyKey
+```
+
+⚠️ **Warning**: Loses compile-time type safety. Prefer specific types when possible.
+
+**Methods**:
+```go
+func (k AnyKey) Field(value any) Field
+func (k AnyKey) Extract(e *Event) any
+func (k AnyKey) ExtractFromFields(fields []Field) any
+```
+
+**Example**:
+```go
+var Metadata = capitan.NewAnyKey("metadata")
+
+c.Emit(ctx, dataUpdated,
+    Metadata.Field(map[string]string{"source": "api"}),
+)
+
+metadata := Metadata.Extract(event)
+if m, ok := metadata.(map[string]string); ok {
+    source := m["source"]
+}
+```
+
+**Common Uses**:
+- Complex structures: `metadata`, `config`, `data`
+- Dynamic data: `extra_fields`, `custom_data`
+
+**Prefer Specific Types**:
+```go
+// ❌ Avoid: Loses type safety
+dataKey := capitan.NewAnyKey("amount")
+c.Emit(ctx, signal, dataKey.Field(9999))
+
+amount := dataKey.Extract(event).(int) // Runtime error if wrong type!
+
+// ✅ Better: Type-safe
+amountKey := capitan.NewIntKey("amount")
+c.Emit(ctx, signal, amountKey.Field(9999))
+
+amount := amountKey.Extract(event) // Always int
+```
+
+## Field Naming Conventions
+
+### Use snake_case
+
+```go
+// ✅ Good
+var UserID = capitan.NewStringKey("user_id")
+var CreatedAt = capitan.NewTimeKey("created_at")
+var IsActive = capitan.NewBoolKey("is_active")
+
+// ❌ Avoid
+var UserID = capitan.NewStringKey("userId")
+var CreatedAt = capitan.NewTimeKey("CreatedAt")
+var IsActive = capitan.NewBoolKey("IsActive")
+```
+
+### Use descriptive names
+
+```go
+// ✅ Good: Clear and specific
+var OrderAmount = capitan.NewIntKey("order_amount")
+var UserEmail = capitan.NewStringKey("user_email")
+var OrderStatus = capitan.NewStringKey("order_status")
+
+// ❌ Avoid: Generic
+var Amount = capitan.NewIntKey("amount") // Amount of what?
+var Email = capitan.NewStringKey("email") // Whose email?
+var Status = capitan.NewStringKey("status") // Status of what?
+```
+
+### Group related keys
+
+```go
+package fields
+
+// User fields
+var (
+    UserID       = capitan.NewStringKey("user_id")
+    UserEmail    = capitan.NewStringKey("user_email")
+    UserRole     = capitan.NewStringKey("user_role")
+    UserVerified = capitan.NewBoolKey("user_verified")
+)
+
+// Order fields
+var (
+    OrderID     = capitan.NewStringKey("order_id")
+    OrderAmount = capitan.NewIntKey("order_amount")
+    OrderStatus = capitan.NewStringKey("order_status")
+)
+
+// Timestamps
+var (
+    CreatedAt = capitan.NewTimeKey("created_at")
+    UpdatedAt = capitan.NewTimeKey("updated_at")
+)
+```
+
+## Field Best Practices
+
+### 1. Define Keys as Constants
+
+```go
+// ✅ Good: Reusable across application
+package fields
+
+var UserID = capitan.NewStringKey("user_id")
+
+// Use everywhere
+c.Emit(ctx, signal1, fields.UserID.Field("u1"))
+c.Emit(ctx, signal2, fields.UserID.Field("u2"))
+
+// ❌ Bad: Recreate each time
+c.Emit(ctx, signal, capitan.NewStringKey("user_id").Field("u1"))
+```
+
+### 2. Use Specific Types
+
+```go
+// ✅ Good: Type-safe
+amountKey := capitan.NewIntKey("amount")
+timestampKey := capitan.NewTimeKey("timestamp")
+
+// ❌ Avoid: Loses type safety
+amountKey := capitan.NewAnyKey("amount")
+timestampKey := capitan.NewAnyKey("timestamp")
+```
+
+### 3. Document Field Keys
+
+```go
+// UserID uniquely identifies a user across the system.
+// Used in: user.registered, user.verified, user.deleted
+var UserID = capitan.NewStringKey("user_id")
+
+// OrderAmount represents the order total in cents.
+// Used in: order.placed, order.validated, payment.processed
+var OrderAmount = capitan.NewIntKey("order_amount")
+```
+
+### 4. Consistent Units
+
+```go
+// ✅ Good: Always store money in cents
+var OrderAmount = capitan.NewIntKey("order_amount") // cents
+c.Emit(ctx, signal, OrderAmount.Field(9999)) // $99.99
+
+// ✅ Good: Always store durations as time.Duration
+var Timeout = capitan.NewDurationKey("timeout")
+c.Emit(ctx, signal, Timeout.Field(5*time.Second))
+
+// ❌ Avoid: Inconsistent units
+var Amount = capitan.NewFloatKey("amount") // dollars? cents?
+var Timeout = capitan.NewIntKey("timeout") // seconds? milliseconds?
+```
+
+## Extracting Multiple Fields
+
+```go
+func handleOrder(ctx context.Context, e *Event) {
+    // Extract multiple fields
+    orderID := fields.OrderID.Extract(e)
+    customerID := fields.CustomerID.Extract(e)
+    amount := fields.OrderAmount.Extract(e)
+    createdAt := fields.CreatedAt.Extract(e)
+
+    log.Printf("Order %s by %s: $%.2f at %s",
+        orderID,
+        customerID,
+        float64(amount)/100,
+        createdAt.Format(time.RFC3339),
+    )
+}
+```
+
+## Zero Values
+
+When a field is missing, Extract returns the zero value:
+
+```go
+// String: ""
+userID := UserIDKey.Extract(e) // "" if not present
+
+// Int: 0
+amount := AmountKey.Extract(e) // 0 if not present
+
+// Bool: false
+verified := VerifiedKey.Extract(e) // false if not present
+
+// Time: zero time
+createdAt := CreatedAtKey.Extract(e) // time.Time{} if not present
+
+// Check for zero time
+if createdAt.IsZero() {
+    log.Println("No creation time provided")
+}
+```
+
+## Next Steps
+
+- [API Reference](./api.md) - Complete API documentation
+- [Configuration Reference](./configuration.md) - All configuration options
+- [Core Concepts](../learn/core-concepts.md) - Understanding fields and events

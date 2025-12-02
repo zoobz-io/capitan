@@ -1,0 +1,324 @@
+---
+title: Introduction to Capitan
+description: Why capitan exists and what problems it solves for event coordination in Go applications.
+author: Capitan Team
+published: 2025-12-01
+tags: [Introduction, Overview, Concepts]
+---
+
+# Introduction to Capitan
+
+## What is Capitan?
+
+Capitan is a type-safe event coordination library for Go that provides structured, reliable event handling with per-signal worker isolation. Think of it as a coordination layer that sits between your application components, ensuring events flow predictably and efficiently.
+
+## The Problem
+
+Modern Go applications often need to coordinate multiple components responding to events:
+
+```go
+// Traditional approach: Manual channel management
+type EventBus struct {
+    listeners map[string][]chan Event
+    mu        sync.RWMutex
+}
+
+func (eb *EventBus) Emit(eventType string, data any) {
+    eb.mu.RLock()
+    defer eb.mu.RUnlock()
+
+    for _, ch := range eb.listeners[eventType] {
+        select {
+        case ch <- Event{Type: eventType, Data: data}:
+        default: // Dropped event!
+        }
+    }
+}
+```
+
+This approach has problems:
+
+1. **Type Safety**: `any` data loses compile-time guarantees
+2. **Channel Management**: Manual channel creation, cleanup, and buffer sizing
+3. **Event Drops**: Non-blocking sends silently drop events
+4. **Cross-Signal Contention**: All events compete for the same locks
+5. **Testing Complexity**: No standard testing patterns
+
+## The Capitan Solution
+
+Capitan provides structured event coordination with:
+
+### 1. Type-Safe Events
+
+Events carry strongly-typed fields:
+
+```go
+// Define typed keys
+userKey := capitan.NewStringKey("user_id")
+amountKey := capitan.NewIntKey("amount")
+
+// Emit with type safety
+c.Emit(ctx, orderPlaced,
+    userKey.Field("user-123"),
+    amountKey.Field(9999),
+)
+
+// Extract with compile-time guarantees
+userID := userKey.Extract(event)   // string
+amount := amountKey.Extract(event) // int
+```
+
+### 2. Per-Signal Workers
+
+Each signal gets its own goroutine worker:
+
+```go
+// These run in independent workers - zero contention
+orderPlaced := capitan.NewSignal("order.placed", "Order placed")
+userRegistered := capitan.NewSignal("user.registered", "User registered")
+
+c.Hook(orderPlaced, handleOrder)      // Worker 1
+c.Hook(userRegistered, handleUser)    // Worker 2
+```
+
+Benefits:
+- **Isolation**: One slow listener doesn't block unrelated signals
+- **Ordering**: Events for the same signal are processed in order
+- **Scalability**: Workers scale independently per signal
+
+### 3. Zero Event Drops
+
+Events are queued with configurable buffers:
+
+```go
+c := capitan.New(capitan.WithBufferSize(100))
+
+// Events queue up to buffer size, then block
+// No silent drops - you control backpressure behavior
+```
+
+### 4. Dynamic Observation
+
+Observe signals without pre-registration:
+
+```go
+// Observer receives events from ALL signals
+observer := c.Observe(func(ctx context.Context, e *capitan.Event) {
+    log.Printf("[AUDIT] %s: %v", e.Signal().Name(), e.Fields())
+})
+
+// Or whitelist specific signals
+observer := c.Observe(auditHandler, sensitiveSignal1, sensitiveSignal2)
+```
+
+### 5. Built-In Testing
+
+Comprehensive testing infrastructure:
+
+```go
+capture := capitantesting.NewEventCapture()
+c.Hook(signal, capture.Handler())
+
+c.Emit(ctx, signal, key.Field("value"))
+c.Shutdown()
+
+events := capture.Events()
+assert.Equal(t, 1, len(events))
+```
+
+## When to Use Capitan
+
+### Good Fits
+
+**Event-Driven Architectures**
+```go
+// Microservices coordination
+c.Emit(ctx, paymentProcessed, orderID.Field(id))
+c.Emit(ctx, inventoryReserved, orderID.Field(id))
+c.Emit(ctx, notificationSent, orderID.Field(id))
+```
+
+**Audit Logging**
+```go
+// Observer-based audit trail
+observer := c.Observe(func(ctx context.Context, e *capitan.Event) {
+    auditLog.Record(e.Signal(), e.Timestamp(), e.Fields())
+})
+```
+
+**Multi-Tenant Systems**
+```go
+// Tenant-specific event routing
+tenantKey := capitan.NewStringKey("tenant_id")
+c.Hook(dataUpdated, func(ctx context.Context, e *capitan.Event) {
+    tenant := tenantKey.Extract(e)
+    tenantCache[tenant].Invalidate()
+})
+```
+
+**Workflow Orchestration**
+```go
+// Cascading event chains
+c.Hook(orderPlaced, func(ctx context.Context, e *capitan.Event) {
+    // Validate inventory
+    c.Emit(ctx, inventoryChecked, ...)
+})
+
+c.Hook(inventoryChecked, func(ctx context.Context, e *capitan.Event) {
+    // Process payment
+    c.Emit(ctx, paymentProcessed, ...)
+})
+```
+
+### Not Ideal For
+
+**Low-Level Synchronization**
+- Use channels or sync primitives for tight goroutine coordination
+- Capitan adds overhead for simple point-to-point communication
+
+**Streaming Data**
+- Capitan processes discrete events, not continuous streams
+- Consider streaming frameworks for high-throughput data pipelines
+
+**Real-Time Systems**
+- Worker queuing adds latency (microseconds to milliseconds)
+- Use direct function calls for nanosecond-critical paths
+
+## Design Philosophy
+
+### 1. Type Safety
+
+Strong typing prevents runtime errors:
+
+```go
+// Won't compile - type mismatch
+intKey := capitan.NewIntKey("count")
+c.Emit(ctx, signal, intKey.Field("not an int")) // Compile error
+```
+
+### 2. Simplicity
+
+Simple API surface:
+
+```go
+c.Emit(ctx, signal, fields...)  // Send event
+c.Hook(signal, handler)         // Listen to signal
+c.Observe(handler, signals...)  // Observe signals
+c.Shutdown()                    // Clean shutdown
+```
+
+### 3. Performance
+
+Zero-allocation event pooling:
+
+```go
+// Events are pooled via sync.Pool
+// No allocations in hot paths for high-throughput scenarios
+```
+
+### 4. Reliability
+
+Guaranteed event delivery (within buffer limits):
+
+```go
+// Events queue up to buffer size
+// Emit() blocks when full (controllable backpressure)
+// Shutdown() drains queues before exiting
+```
+
+### 5. Testability
+
+Built-in testing support:
+
+```go
+// Helpers solve event pooling issues automatically
+capture := capitantesting.NewEventCapture()
+c.Hook(signal, capture.Handler())
+```
+
+## Comparison to Alternatives
+
+### vs. Channels
+
+**Channels**
+- ✅ Built-in, zero dependencies
+- ✅ Lowest overhead
+- ❌ Manual management (creation, cleanup, buffer sizing)
+- ❌ No type safety for event data
+- ❌ No built-in observation patterns
+
+**Capitan**
+- ✅ Structured event coordination
+- ✅ Type-safe event fields
+- ✅ Dynamic observers
+- ✅ Built-in testing
+- ❌ Additional dependency
+- ❌ Slight overhead (microseconds)
+
+### vs. Event Bus Libraries
+
+**Traditional Event Bus**
+- ✅ Familiar pub/sub pattern
+- ❌ Usually `any`-typed data
+- ❌ Global contention on single lock
+- ❌ No worker isolation
+
+**Capitan**
+- ✅ Type-safe fields
+- ✅ Per-signal workers (zero contention)
+- ✅ Worker isolation guarantees
+- ✅ Standardized testing
+
+### vs. Message Queues
+
+**Message Queue (RabbitMQ, Kafka, etc.)**
+- ✅ Distributed coordination
+- ✅ Persistence
+- ✅ Multi-process communication
+- ❌ External dependencies
+- ❌ Network overhead
+- ❌ Complex operations
+
+**Capitan**
+- ✅ In-process (zero network overhead)
+- ✅ Simple API
+- ✅ Type safety
+- ❌ Single-process only
+- ❌ No persistence
+
+## Architecture Preview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Capitan                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Signal A          Signal B          Signal C              │
+│  ┌────────┐       ┌────────┐       ┌────────┐             │
+│  │Worker 1│       │Worker 2│       │Worker 3│             │
+│  │ Queue  │       │ Queue  │       │ Queue  │             │
+│  └────────┘       └────────┘       └────────┘             │
+│      ▲                ▲                ▲                   │
+│      │                │                │                   │
+│  ┌───┴────┬───────────┴─────┬──────────┴──────┐           │
+│  │Listener│    Listener     │    Listener     │           │
+│  └────────┴─────────────────┴─────────────────┘           │
+│                                                             │
+│  ┌──────────────────────────────────────────────┐          │
+│  │          Observers (All Signals)             │          │
+│  └──────────────────────────────────────────────┘          │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Each signal has:
+- Independent worker goroutine
+- Buffered event queue
+- Multiple listeners
+- No cross-signal contention
+
+## Next Steps
+
+- [Core Concepts](./core-concepts.md) - Deep dive into signals, listeners, and observers
+- [Architecture](./architecture.md) - System design and implementation details
+- [Getting Started](../tutorials/getting-started.md) - Build your first event system

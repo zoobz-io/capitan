@@ -49,12 +49,18 @@ func (s Signal) Description() string {
 }
 
 // Severity represents the logging severity level of an event.
+// Compatible with standard logging conventions and OpenTelemetry.
 type Severity string
 
+// Severity levels for events.
 const (
+	// SeverityDebug is for development and troubleshooting information.
 	SeverityDebug Severity = "DEBUG"
-	SeverityInfo  Severity = "INFO"
-	SeverityWarn  Severity = "WARN"
+	// SeverityInfo is for normal operational messages (default for Emit).
+	SeverityInfo Severity = "INFO"
+	// SeverityWarn is for warning conditions that may need attention.
+	SeverityWarn Severity = "WARN"
+	// SeverityError is for error conditions requiring immediate action.
 	SeverityError Severity = "ERROR"
 )
 
@@ -69,8 +75,11 @@ type Key interface {
 }
 
 // Variant is a discriminator for the Field interface implementation type.
+// Used for runtime type identification when type assertions are needed.
 type Variant string
 
+// Built-in variants for primitive types. Custom types should use namespaced
+// variant strings (e.g., "myapp.OrderInfo") to avoid collisions.
 const (
 	VariantString   Variant = "string"
 	VariantInt      Variant = "int"

@@ -10,12 +10,15 @@ help:
 	@echo ""
 	@echo "Testing & Quality:"
 	@echo "  make test            - Run unit tests with race detector"
-	@echo "  make bench           - Run benchmarks"
+	@echo "  make test-integration- Run integration tests"
+	@echo "  make test-bench      - Run performance benchmarks"
+	@echo "  make test-all        - Run all tests (unit + integration)"
+	@echo "  make bench           - Run benchmarks (legacy alias)"
 	@echo "  make lint            - Run linters"
 	@echo "  make lint-fix        - Run linters with auto-fix"
 	@echo "  make coverage        - Generate coverage report (HTML)"
 	@echo "  make check           - Run tests and lint (quick check)"
-	@echo "  make ci              - Full CI simulation (tests + lint + coverage)"
+	@echo "  make ci              - Full CI simulation (all tests + lint + coverage)"
 	@echo ""
 	@echo "Other:"
 	@echo "  make install-tools   - Install required development tools"
@@ -67,6 +70,20 @@ install-tools:
 check: test lint
 	@echo "All checks passed!"
 
+# Run integration tests
+test-integration:
+	@echo "Running integration tests..."
+	@go test -v ./testing/integration/...
+
+# Run benchmarks
+test-bench:
+	@echo "Running benchmarks..."
+	@go test -v -bench=. -benchmem ./testing/benchmarks/...
+
+# Run all tests (unit + integration)
+test-all: test test-integration
+	@echo "All tests passed!"
+
 # CI simulation - what CI runs locally
-ci: clean lint test coverage
+ci: clean lint test test-integration coverage
 	@echo "Full CI simulation complete!"

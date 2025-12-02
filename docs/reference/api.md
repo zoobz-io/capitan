@@ -1,0 +1,603 @@
+---
+title: API Reference
+description: Complete API documentation for capitan.
+author: Capitan Team
+published: 2025-12-01
+tags: [Reference, API, Documentation]
+---
+
+# API Reference
+
+Complete API documentation for capitan.
+
+## Core Types
+
+### Capitan
+
+The main event coordination instance.
+
+```go
+type Capitan struct {
+    // Contains filtered or unexported fields
+}
+```
+
+#### New
+
+```go
+func New(opts ...Option) *Capitan
+```
+
+Creates a new Capitan instance with optional configuration.
+
+**Example**:
+```go
+c := capitan.New()
+c := capitan.New(capitan.WithBufferSize(100))
+```
+
+#### Emit
+
+```go
+func (c *Capitan) Emit(ctx context.Context, signal Signal, fields ...Field)
+```
+
+Emits an event to all listeners and observers of the signal.
+
+**Parameters**:
+- `ctx` - Context for propagation and cancellation
+- `signal` - The signal to emit
+- `fields` - Optional typed field values
+
+**Example**:
+```go
+c.Emit(ctx, orderPlaced,
+    fields.OrderID.Field("ord-123"),
+    fields.Amount.Field(9999),
+)
+```
+
+#### EmitWithSeverity
+
+```go
+func (c *Capitan) EmitWithSeverity(ctx context.Context, severity Severity, signal Signal, fields ...Field)
+```
+
+Emits an event with a specific severity level.
+
+**Parameters**:
+- `ctx` - Context for propagation
+- `severity` - Severity level (Debug, Info, Warn, Error, Critical)
+- `signal` - The signal to emit
+- `fields` - Optional typed field values
+
+**Example**:
+```go
+c.EmitWithSeverity(ctx, capitan.SeverityError, paymentFailed,
+    fields.OrderID.Field("ord-123"),
+    fields.Reason.Field("card declined"),
+)
+```
+
+#### Hook
+
+```go
+func (c *Capitan) Hook(signal Signal, handler EventCallback) *Listener
+```
+
+Registers a listener for a specific signal.
+
+**Parameters**:
+- `signal` - The signal to listen for
+- `handler` - Callback function to invoke
+
+**Returns**: Listener handle for cleanup
+
+**Example**:
+```go
+listener := c.Hook(orderPlaced, func(ctx context.Context, e *Event) {
+    orderID := orderIDKey.Extract(e)
+    processOrder(orderID)
+})
+defer listener.Close()
+```
+
+#### Observe
+
+```go
+func (c *Capitan) Observe(handler EventCallback, signals ...Signal) *Observer
+```
+
+Creates an observer that watches multiple signals.
+
+**Parameters**:
+- `handler` - Callback function to invoke
+- `signals` - Optional whitelist of signals (empty = all signals)
+
+**Returns**: Observer handle for cleanup
+
+**Example**:
+```go
+// Observe all signals
+observer := c.Observe(func(ctx context.Context, e *Event) {
+    log.Printf("[AUDIT] %s", e.Signal().Name())
+})
+
+// Observe specific signals
+observer := c.Observe(auditHandler, userLogin, userLogout)
+defer observer.Close()
+```
+
+#### Shutdown
+
+```go
+func (c *Capitan) Shutdown()
+```
+
+Gracefully shuts down all workers, draining queues.
+
+**Example**:
+```go
+c := capitan.New()
+defer c.Shutdown()
+```
+
+#### Stats
+
+```go
+func (c *Capitan) Stats() Stats
+```
+
+Returns current statistics about pending events.
+
+**Returns**: Stats struct with signal queue depths
+
+**Example**:
+```go
+stats := c.Stats()
+for signal, count := range stats.PendingEvents {
+    log.Printf("Signal %s has %d pending events", signal, count)
+}
+```
+
+### Signal
+
+Represents a named event type.
+
+```go
+type Signal struct {
+    // Contains filtered or unexported fields
+}
+```
+
+#### NewSignal
+
+```go
+func NewSignal(name, description string) Signal
+```
+
+Creates a new signal with a name and description.
+
+**Parameters**:
+- `name` - Unique identifier (e.g., "order.placed")
+- `description` - Human-readable description
+
+**Example**:
+```go
+var OrderPlaced = capitan.NewSignal("order.placed", "Order placed by customer")
+```
+
+#### Name
+
+```go
+func (s Signal) Name() string
+```
+
+Returns the signal's name.
+
+#### Description
+
+```go
+func (s Signal) Description() string
+```
+
+Returns the signal's description.
+
+### Event
+
+Represents an instance of a signal with data.
+
+```go
+type Event struct {
+    // Contains filtered or unexported fields
+}
+```
+
+⚠️ **Important**: Events are pooled via `sync.Pool` and reused. Never store event pointers directly.
+
+#### Signal
+
+```go
+func (e *Event) Signal() Signal
+```
+
+Returns the signal that triggered this event.
+
+#### Timestamp
+
+```go
+func (e *Event) Timestamp() time.Time
+```
+
+Returns when the event was created.
+
+#### Severity
+
+```go
+func (e *Event) Severity() Severity
+```
+
+Returns the event's severity level.
+
+#### Fields
+
+```go
+func (e *Event) Fields() []Field
+```
+
+Returns a defensive copy of the event's fields.
+
+### Field Keys
+
+Typed keys for extracting event data.
+
+#### NewStringKey
+
+```go
+func NewStringKey(name string) StringKey
+```
+
+Creates a string field key.
+
+**Example**:
+```go
+var UserID = capitan.NewStringKey("user_id")
+```
+
+#### NewIntKey
+
+```go
+func NewIntKey(name string) IntKey
+```
+
+Creates an integer field key.
+
+#### NewFloatKey
+
+```go
+func NewFloatKey(name string) FloatKey
+```
+
+Creates a float field key.
+
+#### NewBoolKey
+
+```go
+func NewBoolKey(name string) BoolKey
+```
+
+Creates a boolean field key.
+
+#### NewTimeKey
+
+```go
+func NewTimeKey(name string) TimeKey
+```
+
+Creates a time.Time field key.
+
+#### NewDurationKey
+
+```go
+func NewDurationKey(name string) DurationKey
+```
+
+Creates a time.Duration field key.
+
+#### NewAnyKey
+
+```go
+func NewAnyKey(name string) AnyKey
+```
+
+Creates a field key for any type (loses type safety).
+
+### Field Key Methods
+
+All field keys implement these methods:
+
+#### Field
+
+```go
+func (k StringKey) Field(value string) Field
+```
+
+Creates a field with the given value.
+
+**Example**:
+```go
+userIDKey.Field("user-123")
+```
+
+#### Extract
+
+```go
+func (k StringKey) Extract(e *Event) string
+```
+
+Extracts the field value from an event.
+
+**Example**:
+```go
+userID := userIDKey.Extract(event)
+```
+
+#### ExtractFromFields
+
+```go
+func (k StringKey) ExtractFromFields(fields []Field) string
+```
+
+Extracts the field value from a field slice.
+
+**Example**:
+```go
+userID := userIDKey.ExtractFromFields(event.Fields())
+```
+
+### Listener
+
+Handle for a registered listener.
+
+```go
+type Listener struct {
+    // Contains filtered or unexported fields
+}
+```
+
+#### Close
+
+```go
+func (l *Listener) Close()
+```
+
+Removes the listener. Safe to call multiple times.
+
+**Example**:
+```go
+listener := c.Hook(signal, handler)
+defer listener.Close()
+```
+
+### Observer
+
+Handle for a registered observer.
+
+```go
+type Observer struct {
+    // Contains filtered or unexported fields
+}
+```
+
+#### Close
+
+```go
+func (o *Observer) Close()
+```
+
+Removes the observer. Safe to call multiple times.
+
+**Example**:
+```go
+observer := c.Observe(handler)
+defer observer.Close()
+```
+
+### EventCallback
+
+Function signature for event handlers.
+
+```go
+type EventCallback func(ctx context.Context, e *Event)
+```
+
+**Example**:
+```go
+func handleOrder(ctx context.Context, e *Event) {
+    orderID := orderIDKey.Extract(e)
+    log.Printf("Processing order: %s", orderID)
+}
+
+c.Hook(orderPlaced, handleOrder)
+```
+
+### Severity
+
+Event severity levels.
+
+```go
+type Severity int
+
+const (
+    SeverityDebug    Severity = 0
+    SeverityInfo     Severity = 1
+    SeverityWarn     Severity = 2
+    SeverityError    Severity = 3
+    SeverityCritical Severity = 4
+)
+```
+
+**Example**:
+```go
+c.EmitWithSeverity(ctx, capitan.SeverityError, paymentFailed, fields...)
+```
+
+### Stats
+
+Statistics about pending events.
+
+```go
+type Stats struct {
+    PendingEvents map[string]int // Signal name → queue depth
+}
+```
+
+**Example**:
+```go
+stats := c.Stats()
+for signal, count := range stats.PendingEvents {
+    if count > 100 {
+        log.Printf("Warning: %s has %d pending events", signal, count)
+    }
+}
+```
+
+## Configuration Options
+
+### WithBufferSize
+
+```go
+func WithBufferSize(size int) Option
+```
+
+Sets the buffer size for worker queues (per signal).
+
+**Default**: 100
+
+**Example**:
+```go
+c := capitan.New(capitan.WithBufferSize(500))
+```
+
+### WithSyncMode
+
+```go
+func WithSyncMode() Option
+```
+
+Enables synchronous mode (listeners called directly, no workers).
+
+⚠️ **Testing Only**: Use only in tests for deterministic behavior.
+
+**Example**:
+```go
+c := capitan.New(capitan.WithSyncMode())
+```
+
+## Testing Helpers
+
+Located in `github.com/zoobzio/capitan/testing`:
+
+### EventCapture
+
+Captures events with defensive copying.
+
+```go
+func NewEventCapture() *EventCapture
+```
+
+**Example**:
+```go
+capture := capitantesting.NewEventCapture()
+c.Hook(signal, capture.Handler())
+
+c.Emit(ctx, signal, fields...)
+c.Shutdown()
+
+events := capture.Events()
+```
+
+#### Methods
+
+```go
+func (ec *EventCapture) Handler() EventCallback
+func (ec *EventCapture) Events() []CapturedEvent
+func (ec *EventCapture) Clear()
+```
+
+### EventCounter
+
+Counts events efficiently.
+
+```go
+func NewEventCounter() *EventCounter
+```
+
+**Example**:
+```go
+counter := capitantesting.NewEventCounter()
+c.Hook(signal, counter.Handler())
+
+c.Emit(ctx, signal)
+c.Shutdown()
+
+count := counter.Count() // int64
+```
+
+#### Methods
+
+```go
+func (ec *EventCounter) Handler() EventCallback
+func (ec *EventCounter) Count() int64
+func (ec *EventCounter) Reset()
+```
+
+### TestCapitan
+
+Pre-configured capitan for tests (async mode).
+
+```go
+func TestCapitan() *Capitan
+```
+
+**Example**:
+```go
+func TestFeature(t *testing.T) {
+    c := capitantesting.TestCapitan()
+    defer c.Shutdown()
+
+    // Test code
+}
+```
+
+### CapturedEvent
+
+Snapshot of an event for testing.
+
+```go
+type CapturedEvent struct {
+    Signal    Signal
+    Timestamp time.Time
+    Severity  Severity
+    Fields    []Field
+}
+```
+
+## Thread Safety
+
+All public methods are thread-safe and can be called concurrently:
+
+```go
+// Safe to call from multiple goroutines
+go c.Emit(ctx, signal1, fields...)
+go c.Emit(ctx, signal2, fields...)
+go c.Hook(signal3, handler)
+go listener.Close()
+```
+
+## Next Steps
+
+- [Field Types Reference](./fields.md) - All field types
+- [Configuration Reference](./configuration.md) - All options
+- [Testing Guide](../guides/testing.md) - Testing patterns
+- [Core Concepts](../learn/core-concepts.md) - Understand the model

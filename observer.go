@@ -2,8 +2,13 @@ package capitan
 
 import "sync"
 
-// Observer represents a subscription to all signals (dynamic).
-// Call Close() to unregister all listeners.
+// Observer represents a dynamic subscription that receives events from multiple signals.
+//
+// Unlike Listener which subscribes to a single signal, Observer can watch all signals
+// or a whitelist of specific signals. Observers automatically attach to new signals
+// as they are created, making them suitable for cross-cutting concerns like logging.
+//
+// Call Close to unregister all underlying listeners and stop receiving events.
 type Observer struct {
 	listeners []*Listener
 	callback  EventCallback
@@ -45,11 +50,26 @@ func (o *Observer) Close() {
 	}
 }
 
-// Observe registers a callback for all signals on the default instance (dynamic).
-// If signals are provided, only those signals will be observed (whitelist).
-// If no signals are provided, all signals will be observed.
-// The observer will receive events from both existing and future signals.
-// Returns an Observer that can be closed to unregister.
+// Observe registers a callback for all signals on the default instance.
+//
+// If signals are provided, only those signals will be observed (whitelist mode).
+// If no signals are provided, all signals will be observed including future ones.
+//
+// Returns an Observer that can be closed to unregister all listeners.
+//
+// Example (logging all events):
+//
+//	observer := capitan.Observe(func(ctx context.Context, e *capitan.Event) {
+//	    log.Printf("[%s] %s: %s",
+//	        e.Severity(),
+//	        e.Signal().Name(),
+//	        e.Signal().Description())
+//	})
+//	defer observer.Close()
+//
+// Example (whitelist specific signals):
+//
+//	observer := capitan.Observe(handler, orderCreated, orderShipped, orderCanceled)
 func Observe(callback EventCallback, signals ...Signal) *Observer {
 	return defaultInstance().Observe(callback, signals...)
 }

@@ -1,0 +1,680 @@
+---
+title: Architecture
+description: Deep dive into capitan's design - per-signal workers, event pooling, observer implementation, and concurrency model.
+author: Capitan Team
+published: 2025-12-01
+tags: [Architecture, Internals, Design]
+---
+
+# Architecture
+
+## System Overview
+
+Capitan is built around three core principles:
+
+1. **Per-Signal Workers** - Independent goroutines prevent cross-signal contention
+2. **Event Pooling** - Zero-allocation event reuse via `sync.Pool`
+3. **Dynamic Observers** - Cross-cutting handlers without pre-registration
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Capitan                              │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────┐                                            │
+│  │ Event Pool  │ (sync.Pool)                                │
+│  └──────┬──────┘                                            │
+│         │                                                   │
+│         ▼                                                   │
+│  ┌─────────────────────────────────┐                        │
+│  │      Signal Registry            │                        │
+│  │  map[Signal]*signalWorker       │                        │
+│  └─────────────────────────────────┘                        │
+│         │                                                   │
+│         ├──────────┬──────────┬──────────┐                  │
+│         ▼          ▼          ▼          ▼                  │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ...                │
+│  │ Worker 1 │ │ Worker 2 │ │ Worker 3 │                    │
+│  │ ┌──────┐ │ │ ┌──────┐ │ │ ┌──────┐ │                    │
+│  │ │Queue │ │ │ │Queue │ │ │ │Queue │ │                    │
+│  │ └──────┘ │ │ └──────┘ │ │ └──────┘ │                    │
+│  │ Listeners│ │ Listeners│ │ Listeners│                    │
+│  └──────────┘ └──────────┘ └──────────┘                    │
+│                                                             │
+│  ┌──────────────────────────────────────┐                   │
+│  │  Observers (Direct Invocation)       │                   │
+│  └──────────────────────────────────────┘                   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Per-Signal Workers
+
+### Design Rationale
+
+Traditional event buses use a single lock and dispatcher:
+
+```go
+// Traditional: Single lock for all events
+type EventBus struct {
+    listeners map[string][]Handler
+    mu        sync.RWMutex // BOTTLENECK
+}
+
+func (eb *EventBus) Emit(event string) {
+    eb.mu.RLock()           // All events contend here
+    defer eb.mu.RUnlock()
+
+    for _, h := range eb.listeners[event] {
+        h.Handle(event)     // Slow handler blocks everyone
+    }
+}
+```
+
+Capitan eliminates this contention with per-signal workers:
+
+```go
+// Capitan: One worker per signal
+type signalWorker struct {
+    signal    Signal
+    queue     chan *Event
+    listeners []EventCallback
+    mu        sync.RWMutex
+}
+
+// Each worker processes independently
+func (w *signalWorker) run(ctx context.Context) {
+    for {
+        select {
+        case event := <-w.queue:
+            w.processEvent(ctx, event) // Only affects this signal
+        case <-ctx.Done():
+            return
+        }
+    }
+}
+```
+
+### Worker Lifecycle
+
+```
+┌────────────────────────────────────────────────────────┐
+│                 Worker Lifecycle                       │
+└────────────────────────────────────────────────────────┘
+
+Signal Created
+    │
+    ▼
+First Hook() or Emit()
+    │
+    ▼
+┌──────────────────┐
+│  Worker Created  │
+│  - Goroutine     │
+│  - Queue         │
+│  - Listener list │
+└──────────────────┘
+    │
+    ▼
+Processing Events
+    │
+    ├─► Event arrives in queue
+    │   │
+    │   ▼
+    │   Lock listeners (RWMutex)
+    │   │
+    │   ▼
+    │   Call each listener sequentially
+    │   │
+    │   ▼
+    │   Return event to pool
+    │   │
+    │   └─► (loop)
+    │
+    ▼
+Shutdown()
+    │
+    ▼
+Close queue (no new events)
+    │
+    ▼
+Drain remaining events
+    │
+    ▼
+Worker exits
+```
+
+### Worker Isolation
+
+Each worker is completely independent:
+
+```go
+// Signal A worker
+c.Hook(orderPlaced, func(ctx context.Context, e *Event) {
+    time.Sleep(10 * time.Second) // Slow!
+})
+
+// Signal B worker (NOT affected by Signal A)
+c.Hook(userRegistered, func(ctx context.Context, e *Event) {
+    // Runs immediately, no blocking
+})
+```
+
+This isolation provides:
+
+1. **No Cross-Signal Contention**: Workers never compete for locks
+2. **Independent Scaling**: Each signal's throughput is independent
+3. **Fault Isolation**: One signal's panic doesn't affect others
+
+### Queue Management
+
+Workers use buffered channels:
+
+```go
+c := capitan.New(capitan.WithBufferSize(100))
+
+// Each worker gets 100-event buffer
+// Emit() blocks when full (backpressure)
+```
+
+**Buffer Sizing Guidelines**:
+
+- **Small (10-50)**: Low memory, fast backpressure
+- **Medium (100-500)**: Balanced for most workloads
+- **Large (1000+)**: Handle traffic spikes, higher memory
+
+## Event Pooling
+
+### Zero-Allocation Design
+
+Events are expensive to allocate:
+
+```go
+type Event struct {
+    signal    Signal
+    timestamp time.Time
+    severity  Severity
+    fields    []Field
+    mu        sync.RWMutex
+}
+
+// Without pooling: Allocates on every Emit()
+// With pooling: Reuses from sync.Pool
+```
+
+### Pool Implementation
+
+```go
+var eventPool = sync.Pool{
+    New: func() any {
+        return &Event{
+            fields: make([]Field, 0, 8), // Pre-allocated capacity
+        }
+    },
+}
+
+// Get from pool
+func getEvent() *Event {
+    e := eventPool.Get().(*Event)
+    e.Reset() // Clear previous data
+    return e
+}
+
+// Return to pool
+func putEvent(e *Event) {
+    eventPool.Put(e)
+}
+```
+
+### Event Lifecycle
+
+```
+┌────────────────────────────────────────────────────────┐
+│                 Event Lifecycle                        │
+└────────────────────────────────────────────────────────┘
+
+Emit() called
+    │
+    ▼
+Get event from pool
+    │
+    ▼
+Populate with data
+│  - Signal
+│  - Timestamp
+│  - Severity
+│  - Fields
+    │
+    ▼
+Send to signal worker
+    │
+    ▼
+Worker receives event
+    │
+    ▼
+Call listeners
+│  - Observer (direct)
+│  - Signal listeners (sequential)
+    │
+    ▼
+Return to pool
+    │
+    ▼
+Event reused for next Emit()
+```
+
+### Defensive Copying
+
+Because events are pooled, direct references are unsafe:
+
+```go
+// ❌ WRONG - Stores pointer to pooled event
+var events []*Event
+c.Hook(signal, func(ctx context.Context, e *Event) {
+    events = append(events, e) // BUG: e will be reused!
+})
+
+// ✅ RIGHT - Copies data
+var events []CapturedEvent
+c.Hook(signal, func(ctx context.Context, e *Event) {
+    events = append(events, CapturedEvent{
+        Signal:    e.Signal(),
+        Timestamp: e.Timestamp(),
+        Fields:    e.Fields(), // Fields() returns defensive copy
+    })
+})
+```
+
+The testing helpers handle this automatically:
+
+```go
+// Helper creates defensive copies
+capture := capitantesting.NewEventCapture()
+c.Hook(signal, capture.Handler())
+
+// Safe to use after events are pooled
+events := capture.Events()
+```
+
+## Observer Implementation
+
+### Observer Pattern
+
+Observers receive events from all signals (or a whitelist) without pre-registration:
+
+```go
+// Traditional: Must register for each signal
+c.Hook(signal1, auditHandler)
+c.Hook(signal2, auditHandler)
+c.Hook(signal3, auditHandler)
+// ... repeat for every signal
+
+// Capitan: Single observer for all signals
+observer := c.Observe(auditHandler)
+```
+
+### Observer Architecture
+
+```
+┌────────────────────────────────────────────────────────┐
+│                 Observer Flow                          │
+└────────────────────────────────────────────────────────┘
+
+Emit(signal, fields...)
+    │
+    ▼
+┌──────────────┐
+│ Event Router │
+└──────────────┘
+    │
+    ├─────────────────┬─────────────────┐
+    ▼                 ▼                 ▼
+Signal Worker    Observers (All)   Observers (Whitelist)
+    │                 │                 │
+    ▼                 ▼                 ▼
+Queue + Listeners  Direct Call     Check whitelist
+                      │                 │
+                      ▼                 ▼
+                   handler(e)      if signal in list:
+                                     handler(e)
+```
+
+### Observer Registration
+
+Observers are added to a global list:
+
+```go
+type observerEntry struct {
+    handler   EventCallback
+    whitelist map[Signal]struct{} // nil = all signals
+}
+
+type Capitan struct {
+    observers []observerEntry
+    obsMu     sync.RWMutex
+}
+
+func (c *Capitan) Observe(handler EventCallback, signals ...Signal) *Observer {
+    c.obsMu.Lock()
+    defer c.obsMu.Unlock()
+
+    entry := observerEntry{handler: handler}
+
+    if len(signals) > 0 {
+        entry.whitelist = make(map[Signal]struct{})
+        for _, sig := range signals {
+            entry.whitelist[sig] = struct{}{}
+        }
+    }
+
+    c.observers = append(c.observers, entry)
+    return &Observer{...}
+}
+```
+
+### Observer Invocation
+
+Observers are called directly (not queued):
+
+```go
+func (c *Capitan) Emit(ctx context.Context, signal Signal, fields ...Field) {
+    event := getEvent()
+    // ... populate event
+
+    // Call observers immediately
+    c.notifyObservers(ctx, event)
+
+    // Then send to signal worker
+    worker.queue <- event
+}
+
+func (c *Capitan) notifyObservers(ctx context.Context, event *Event) {
+    c.obsMu.RLock()
+    defer c.obsMu.RUnlock()
+
+    for _, obs := range c.observers {
+        // Check whitelist
+        if obs.whitelist != nil {
+            if _, ok := obs.whitelist[event.signal]; !ok {
+                continue // Not in whitelist
+            }
+        }
+
+        // Call handler directly
+        obs.handler(ctx, event)
+    }
+}
+```
+
+**Key Difference**: Observers execute synchronously in the `Emit()` call, while signal listeners execute asynchronously in worker goroutines.
+
+### Observer vs Listener Execution
+
+```go
+c.Observe(func(ctx context.Context, e *Event) {
+    fmt.Println("Observer: runs in Emit() goroutine")
+})
+
+c.Hook(signal, func(ctx context.Context, e *Event) {
+    fmt.Println("Listener: runs in worker goroutine")
+})
+
+// Emit() blocks until observers complete
+c.Emit(ctx, signal, fields...)
+// Observers done ↑
+// Listeners still processing in background ↓
+```
+
+## Concurrency Model
+
+### Lock Hierarchy
+
+Capitan uses a careful lock hierarchy to avoid deadlocks:
+
+```
+┌────────────────────────────────────────────────────────┐
+│                  Lock Hierarchy                        │
+└────────────────────────────────────────────────────────┘
+
+Level 1: Capitan.mu (registry operations)
+    │
+    ├─► Hook() - acquires Capitan.mu to add listener
+    ├─► Emit() - acquires Capitan.mu to find worker
+    └─► Shutdown() - acquires Capitan.mu to close workers
+        │
+        ▼
+Level 2: signalWorker.mu (listener list)
+    │
+    ├─► addListener() - acquires worker.mu
+    ├─► removeListener() - acquires worker.mu
+    └─► processEvent() - RLock for listener iteration
+        │
+        ▼
+Level 3: Observer.mu (observer state)
+    │
+    └─► Close() - acquires observer.mu
+```
+
+**Rules**:
+1. Never hold multiple locks at the same level
+2. Always acquire in order: Capitan → Worker → Observer
+3. Release locks before calling user code (handlers)
+
+### Thread Safety
+
+All operations are thread-safe:
+
+```go
+// Safe to call concurrently
+go c.Emit(ctx, signal1, fields...)
+go c.Emit(ctx, signal2, fields...)
+go c.Hook(signal3, handler)
+go listener.Close()
+```
+
+Each component protects its state:
+
+```go
+// Capitan protects signal registry
+type Capitan struct {
+    signals map[Signal]*signalWorker
+    mu      sync.RWMutex
+}
+
+// Worker protects listener list
+type signalWorker struct {
+    listeners []EventCallback
+    mu        sync.RWMutex
+}
+
+// Observer protects closed state
+type Observer struct {
+    closed atomic.Bool
+}
+```
+
+### Worker Shutdown
+
+Shutdown is graceful and ordered:
+
+```go
+func (c *Capitan) Shutdown() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
+    var wg sync.WaitGroup
+
+    // Close all worker queues
+    for _, worker := range c.signals {
+        wg.Add(1)
+        go func(w *signalWorker) {
+            defer wg.Done()
+
+            // Close queue (no new events)
+            close(w.queue)
+
+            // Worker drains remaining events
+            // Worker goroutine exits
+        }(worker)
+    }
+
+    // Wait for all workers
+    wg.Wait()
+
+    // All events processed
+    // All resources cleaned up
+}
+```
+
+## Performance Characteristics
+
+### Emit() Latency
+
+**Async Mode** (default):
+- Event pool: ~10ns (allocation avoidance)
+- Observer calls: ~100ns per observer
+- Queue send: ~50ns (buffered channel)
+- **Total**: ~1-2µs (1000-2000 nanoseconds)
+
+**Sync Mode** (testing):
+- Event pool: ~10ns
+- Observer calls: ~100ns per observer
+- Direct listener calls: ~50ns per listener
+- **Total**: ~500ns-1µs
+
+### Memory Usage
+
+**Per Signal**:
+- Worker goroutine: ~2KB stack
+- Queue buffer: `bufferSize * 200 bytes`
+- Listener slice: `listeners * 8 bytes`
+
+**Per Observer**:
+- Entry struct: ~40 bytes
+- Whitelist map: `signals * 16 bytes` (if used)
+
+**Event Pool**:
+- Pool grows to max concurrent events
+- Each event: ~200 bytes
+- Reclaimed during GC pauses
+
+### Scalability
+
+**Signals**: Unlimited (limited by memory)
+- Each signal is independent
+- O(1) lookup in registry
+
+**Listeners**: Unlimited per signal
+- Sequential iteration: O(n)
+- RWMutex allows concurrent reads
+
+**Observers**: Moderate (< 100 recommended)
+- O(n) iteration on every Emit()
+- Direct invocation adds latency
+
+**Events**: High throughput
+- Per-signal workers scale independently
+- Event pooling eliminates allocation overhead
+
+## Design Tradeoffs
+
+### Chosen Approach: Per-Signal Workers
+
+**Advantages**:
+- ✅ Zero cross-signal contention
+- ✅ Independent scaling per signal
+- ✅ Ordered delivery guarantees
+- ✅ Fault isolation
+
+**Tradeoffs**:
+- ❌ One goroutine per signal (~2KB each)
+- ❌ Memory overhead for queues
+- ❌ May over-provision for infrequent signals
+
+### Event Pooling
+
+**Advantages**:
+- ✅ Zero allocations in hot paths
+- ✅ Reduced GC pressure
+- ✅ Better cache locality
+
+**Tradeoffs**:
+- ❌ Requires defensive copying
+- ❌ Sync mode bypasses pooling
+- ❌ Testing helpers needed to avoid bugs
+
+### Observer Direct Invocation
+
+**Advantages**:
+- ✅ Immediate execution (no queue delay)
+- ✅ Simple implementation
+- ✅ No additional goroutines
+
+**Tradeoffs**:
+- ❌ Blocks Emit() caller
+- ❌ Slow observers add latency
+- ❌ O(n) overhead on every Emit()
+
+## Comparison to Alternatives
+
+### vs. Single Worker Pool
+
+**Worker Pool Approach**:
+```go
+// Shared worker pool
+for i := 0; i < numWorkers; i++ {
+    go func() {
+        for event := range sharedQueue {
+            processEvent(event)
+        }
+    }()
+}
+```
+
+**Capitan Approach**:
+```go
+// Per-signal workers
+for signal, worker := range c.signals {
+    go worker.run(ctx)
+}
+```
+
+| Feature | Worker Pool | Per-Signal Workers |
+|---------|-------------|-------------------|
+| **Ordering** | ❌ Not guaranteed | ✅ Per-signal ordered |
+| **Isolation** | ❌ Shared workers | ✅ Complete isolation |
+| **Memory** | ✅ Fixed workers | ❌ Scales with signals |
+| **Latency** | ✅ Lower (fewer queues) | ❌ Slight overhead |
+
+**Capitan chose per-signal workers for ordering guarantees and isolation.**
+
+### vs. Direct Function Calls
+
+**Direct Calls**:
+```go
+for _, handler := range handlers {
+    handler.Handle(event)
+}
+```
+
+**Capitan Workers**:
+```go
+worker.queue <- event
+// Handler runs in worker goroutine
+```
+
+| Feature | Direct Calls | Queued Workers |
+|---------|-------------|----------------|
+| **Latency** | ✅ Lowest | ❌ Queue overhead |
+| **Blocking** | ❌ Blocks caller | ✅ Async processing |
+| **Ordering** | ✅ Sequential | ✅ Sequential (per signal) |
+| **Backpressure** | ❌ No control | ✅ Queue limits |
+
+**Capitan uses workers for async processing and backpressure control.**
+
+## Next Steps
+
+- [Core Concepts](./core-concepts.md) - Signal, listener, and observer fundamentals
+- [Performance Guide](../guides/performance.md) - Optimization techniques
+- [Testing Guide](../guides/testing.md) - Test with event pooling awareness
+- [Concurrency Guide](../guides/concurrency.md) - Thread safety patterns

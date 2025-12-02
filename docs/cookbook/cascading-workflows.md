@@ -1,0 +1,571 @@
+---
+title: Cascading Workflows
+description: Build complex event-driven workflows with automatic state transitions.
+author: Capitan Team
+published: 2025-12-01
+tags: [Cookbook, Workflows, State Machine, Cascading]
+---
+
+# Cascading Workflows
+
+> **Pattern Illustration**: This recipe demonstrates workflow orchestration patterns.
+> Define the signals, fields, and business logic for your specific domain.
+
+Event-driven workflow orchestration with automatic state transitions.
+
+## Quick Start
+
+Build a simple workflow in 30 seconds:
+
+```go
+package main
+
+import (
+    "context"
+    "log"
+    "github.com/zoobzio/capitan"
+)
+
+// 1. Define workflow signals
+var (
+    StepOneComplete = capitan.NewSignal("step.one.complete", "Step one complete")
+    StepTwoComplete = capitan.NewSignal("step.two.complete", "Step two complete")
+    WorkflowDone    = capitan.NewSignal("workflow.done", "Workflow complete")
+)
+
+// 2. Define fields
+var WorkflowID = capitan.NewStringKey("workflow_id")
+
+// 3. Wire up the cascade
+func main() {
+    c := capitan.New()
+    defer c.Shutdown()
+
+    // Step 1 → Step 2
+    c.Hook(StepOneComplete, func(ctx context.Context, e *capitan.Event) {
+        id := WorkflowID.Extract(e)
+        log.Printf("Step 1 done for %s, starting step 2", id)
+        c.Emit(ctx, StepTwoComplete, WorkflowID.Field(id))
+    })
+
+    // Step 2 → Done
+    c.Hook(StepTwoComplete, func(ctx context.Context, e *capitan.Event) {
+        id := WorkflowID.Extract(e)
+        log.Printf("Step 2 done for %s, workflow complete", id)
+        c.Emit(ctx, WorkflowDone, WorkflowID.Field(id))
+    })
+
+    // Trigger workflow
+    c.Emit(context.Background(), StepOneComplete, WorkflowID.Field("wf-1"))
+}
+```
+
+Now see the full order fulfillment workflow below...
+
+## Problem
+
+You need to coordinate multi-step business processes where:
+- Each step triggers the next
+- Steps can fail and trigger compensation
+- Progress is tracked across the workflow
+- Multiple workflows can run concurrently
+
+## Solution
+
+```go
+package workflows
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "sync"
+    "time"
+
+    "github.com/zoobzio/capitan"
+)
+
+// Signals for workflow pattern
+var (
+    OrderPlaced            = capitan.NewSignal("order.placed", "Order placed")
+    OrderValidated         = capitan.NewSignal("order.validated", "Order validated")
+    OrderValidationFailed  = capitan.NewSignal("order.validation.failed", "Order validation failed")
+    InventoryReserved      = capitan.NewSignal("inventory.reserved", "Inventory reserved")
+    InventoryUnavailable   = capitan.NewSignal("inventory.unavailable", "Inventory unavailable")
+    PaymentProcessed       = capitan.NewSignal("payment.processed", "Payment processed")
+    PaymentFailed          = capitan.NewSignal("payment.failed", "Payment failed")
+    OrderShipped           = capitan.NewSignal("order.shipped", "Order shipped")
+    InventoryReleased      = capitan.NewSignal("inventory.released", "Inventory released")
+)
+
+// Field keys for workflow pattern
+var (
+    OrderID    = capitan.NewStringKey("order_id")
+    CustomerID = capitan.NewStringKey("customer_id")
+    Amount     = capitan.NewIntKey("amount")
+    Items      = capitan.NewAnyKey("items")
+    Reason     = capitan.NewStringKey("reason")
+    TrackingID = capitan.NewStringKey("tracking_id")
+)
+
+// WorkflowOrchestrator coordinates multi-step workflows
+type WorkflowOrchestrator struct {
+    c         *capitan.Capitan
+    workflows map[string]*WorkflowInstance
+    mu        sync.RWMutex
+}
+
+// WorkflowInstance tracks a single workflow execution
+type WorkflowInstance struct {
+    ID        string
+    Type      string
+    State     string
+    StartedAt time.Time
+    UpdatedAt time.Time
+    Data      map[string]any
+}
+
+func NewWorkflowOrchestrator(c *capitan.Capitan) *WorkflowOrchestrator {
+    return &WorkflowOrchestrator{
+        c:         c,
+        workflows: make(map[string]*WorkflowInstance),
+    }
+}
+
+func (wo *WorkflowOrchestrator) Start() {
+    // Order fulfillment workflow
+    wo.c.Hook(OrderPlaced, wo.handleOrderPlaced)
+    wo.c.Hook(OrderValidated, wo.handleOrderValidated)
+    wo.c.Hook(InventoryReserved, wo.handleInventoryReserved)
+    wo.c.Hook(PaymentProcessed, wo.handlePaymentProcessed)
+    wo.c.Hook(OrderShipped, wo.handleOrderShipped)
+
+    // Error handlers
+    wo.c.Hook(OrderValidationFailed, wo.handleOrderValidationFailed)
+    wo.c.Hook(InventoryUnavailable, wo.handleInventoryUnavailable)
+    wo.c.Hook(PaymentFailed, wo.handlePaymentFailed)
+}
+
+// Step 1: Order Placed
+func (wo *WorkflowOrchestrator) handleOrderPlaced(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+
+    // Create workflow instance
+    wo.createWorkflow(orderID, "order_fulfillment", "placed", map[string]any{
+        "customer_id": CustomerID.Extract(e),
+        "amount":      Amount.Extract(e),
+        "items":       Items.Extract(e),
+    })
+
+    log.Printf("[Workflow:%s] Order placed, validating...", orderID)
+
+    // Validate order
+    if validateOrder(orderID) {
+        wo.updateWorkflowState(orderID, "validated")
+
+        wo.c.Emit(ctx, OrderValidated,
+            OrderID.Field(orderID),
+            CustomerID.Field(CustomerID.Extract(e)),
+            Amount.Field(Amount.Extract(e)),
+        )
+    } else {
+        wo.updateWorkflowState(orderID, "validation_failed")
+
+        wo.c.EmitWithSeverity(ctx, capitan.SeverityError, OrderValidationFailed,
+            OrderID.Field(orderID),
+            Reason.Field("invalid order data"),
+        )
+    }
+}
+
+// Step 2: Order Validated
+func (wo *WorkflowOrchestrator) handleOrderValidated(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+
+    log.Printf("[Workflow:%s] Order validated, reserving inventory...", orderID)
+
+    // Reserve inventory
+    if reserveInventory(orderID) {
+        wo.updateWorkflowState(orderID, "inventory_reserved")
+
+        wo.c.Emit(ctx, InventoryReserved,
+            OrderID.Field(orderID),
+            CustomerID.Field(CustomerID.Extract(e)),
+            Amount.Field(Amount.Extract(e)),
+        )
+    } else {
+        wo.updateWorkflowState(orderID, "inventory_unavailable")
+
+        wo.c.EmitWithSeverity(ctx, capitan.SeverityWarn, InventoryUnavailable,
+            OrderID.Field(orderID),
+            Reason.Field("insufficient stock"),
+        )
+    }
+}
+
+// Step 3: Inventory Reserved
+func (wo *WorkflowOrchestrator) handleInventoryReserved(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+    amount := Amount.Extract(e)
+
+    log.Printf("[Workflow:%s] Inventory reserved, processing payment...", orderID)
+
+    // Process payment
+    if processPayment(orderID, amount) {
+        wo.updateWorkflowState(orderID, "payment_processed")
+
+        wo.c.Emit(ctx, PaymentProcessed,
+            OrderID.Field(orderID),
+            CustomerID.Field(CustomerID.Extract(e)),
+            Amount.Field(amount),
+        )
+    } else {
+        wo.updateWorkflowState(orderID, "payment_failed")
+
+        wo.c.EmitWithSeverity(ctx, capitan.SeverityError, PaymentFailed,
+            OrderID.Field(orderID),
+            Reason.Field("payment declined"),
+        )
+    }
+}
+
+// Step 4: Payment Processed
+func (wo *WorkflowOrchestrator) handlePaymentProcessed(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+
+    log.Printf("[Workflow:%s] Payment processed, shipping order...", orderID)
+
+    // Ship order
+    shipOrder(orderID)
+    wo.updateWorkflowState(orderID, "shipped")
+
+    wo.c.Emit(ctx, OrderShipped,
+        OrderID.Field(orderID),
+        CustomerID.Field(CustomerID.Extract(e)),
+        TrackingID.Field(generateTrackingID(orderID)),
+    )
+}
+
+// Step 5: Order Shipped
+func (wo *WorkflowOrchestrator) handleOrderShipped(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+
+    log.Printf("[Workflow:%s] Order shipped, workflow complete", orderID)
+
+    wo.updateWorkflowState(orderID, "completed")
+    wo.completeWorkflow(orderID)
+}
+
+// Error Handlers (Compensation)
+
+func (wo *WorkflowOrchestrator) handleOrderValidationFailed(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+
+    log.Printf("[Workflow:%s] Validation failed, cancelling order", orderID)
+
+    wo.updateWorkflowState(orderID, "failed")
+    wo.completeWorkflow(orderID)
+}
+
+func (wo *WorkflowOrchestrator) handleInventoryUnavailable(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+
+    log.Printf("[Workflow:%s] Inventory unavailable, cancelling order", orderID)
+
+    wo.updateWorkflowState(orderID, "failed")
+    wo.completeWorkflow(orderID)
+}
+
+func (wo *WorkflowOrchestrator) handlePaymentFailed(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+
+    log.Printf("[Workflow:%s] Payment failed, releasing inventory", orderID)
+
+    // Compensate: Release inventory
+    releaseInventory(orderID)
+
+    wo.c.Emit(ctx, InventoryReleased,
+        OrderID.Field(orderID),
+    )
+
+    wo.updateWorkflowState(orderID, "failed")
+    wo.completeWorkflow(orderID)
+}
+
+// Workflow Management
+
+func (wo *WorkflowOrchestrator) createWorkflow(id, workflowType, state string, data map[string]any) {
+    wo.mu.Lock()
+    defer wo.mu.Unlock()
+
+    now := time.Now()
+    wo.workflows[id] = &WorkflowInstance{
+        ID:        id,
+        Type:      workflowType,
+        State:     state,
+        StartedAt: now,
+        UpdatedAt: now,
+        Data:      data,
+    }
+}
+
+func (wo *WorkflowOrchestrator) updateWorkflowState(id, state string) {
+    wo.mu.Lock()
+    defer wo.mu.Unlock()
+
+    if workflow, ok := wo.workflows[id]; ok {
+        workflow.State = state
+        workflow.UpdatedAt = time.Now()
+    }
+}
+
+func (wo *WorkflowOrchestrator) completeWorkflow(id string) {
+    wo.mu.Lock()
+    defer wo.mu.Unlock()
+
+    delete(wo.workflows, id)
+}
+
+func (wo *WorkflowOrchestrator) GetWorkflow(id string) *WorkflowInstance {
+    wo.mu.RLock()
+    defer wo.mu.RUnlock()
+
+    return wo.workflows[id]
+}
+
+// Business logic stubs (implement for your domain)
+func validateOrder(orderID string) bool {
+    // TODO: Implement order validation logic
+    time.Sleep(10 * time.Millisecond)
+    return true
+}
+
+func reserveInventory(orderID string) bool {
+    // TODO: Implement inventory reservation logic
+    time.Sleep(20 * time.Millisecond)
+    return true
+}
+
+func processPayment(orderID string, amount int) bool {
+    // TODO: Implement payment processing logic
+    time.Sleep(50 * time.Millisecond)
+    return true
+}
+
+func shipOrder(orderID string) {
+    // TODO: Implement shipping logic
+    time.Sleep(30 * time.Millisecond)
+}
+
+func releaseInventory(orderID string) {
+    // TODO: Implement inventory release logic
+    time.Sleep(10 * time.Millisecond)
+}
+
+func generateTrackingID(orderID string) string {
+    return fmt.Sprintf("TRK-%s-%d", orderID, time.Now().Unix())
+}
+```
+
+## Usage
+
+```go
+func main() {
+    c := capitan.New()
+    defer c.Shutdown()
+
+    orchestrator := workflows.NewWorkflowOrchestrator(c)
+    orchestrator.Start()
+
+    // Trigger workflow
+    c.Emit(context.Background(), OrderPlaced,
+        OrderID.Field("ORD-123"),
+        CustomerID.Field("CUST-456"),
+        Amount.Field(9999),
+        Items.Field([]string{"item-1", "item-2"}),
+    )
+
+    // Wait for workflow to complete
+    time.Sleep(500 * time.Millisecond)
+    c.Shutdown()
+}
+```
+
+## State Machine Visualization
+
+```
+                  ┌─────────────┐
+                  │Order Placed │
+                  └──────┬──────┘
+                         │
+                         ▼
+                  ┌──────────────┐
+             ┌────┤   Validated  │
+             │    └──────┬───────┘
+             │           │
+             │           ▼
+             │    ┌─────────────────┐
+             │    │Inventory Reserved│
+             │    └──────┬──────────┘
+             │           │
+             │           ▼
+             │    ┌────────────────┐
+             │    │Payment Processed│
+             │    └──────┬─────────┘
+             │           │
+             │           ▼
+             │    ┌──────────┐
+             │    │ Shipped  │
+             │    └──────┬───┘
+             │           │
+             │           ▼
+             │    ┌───────────┐
+             │    │Completed  │
+             │    └───────────┘
+             │
+             ▼
+      ┌───────────┐
+      │  Failed   │
+      └───────────┘
+```
+
+## Testing
+
+```go
+func TestWorkflowCompletion(t *testing.T) {
+    c := capitan.New()
+    defer c.Shutdown()
+
+    orchestrator := workflows.NewWorkflowOrchestrator(c)
+    orchestrator.Start()
+
+    // Capture shipped events
+    shippedCapture := capitantesting.NewEventCapture()
+    c.Hook(OrderShipped, shippedCapture.Handler())
+
+    // Trigger workflow
+    c.Emit(context.Background(), OrderPlaced,
+        OrderID.Field("TEST-123"),
+        CustomerID.Field("CUST-TEST"),
+        Amount.Field(1000),
+    )
+
+    // Wait for cascade
+    time.Sleep(200 * time.Millisecond)
+    c.Shutdown()
+
+    // Verify completion
+    shipped := shippedCapture.Events()
+    require.Equal(t, 1, len(shipped))
+
+    orderID := OrderID.ExtractFromFields(shipped[0].Fields)
+    assert.Equal(t, "TEST-123", orderID)
+
+    // Verify workflow cleaned up
+    workflow := orchestrator.GetWorkflow("TEST-123")
+    assert.Nil(t, workflow)
+}
+```
+
+## Production Considerations
+
+### 1. Persist Workflow State
+
+```go
+func (wo *WorkflowOrchestrator) updateWorkflowState(id, state string) {
+    wo.mu.Lock()
+    defer wo.mu.Unlock()
+
+    if workflow, ok := wo.workflows[id]; ok {
+        workflow.State = state
+        workflow.UpdatedAt = time.Now()
+
+        // Persist to database
+        wo.db.Exec(`
+            UPDATE workflows
+            SET state = ?, updated_at = ?
+            WHERE id = ?
+        `, state, workflow.UpdatedAt, id)
+    }
+}
+```
+
+### 2. Handle Timeouts
+
+```go
+// Additional signals for production considerations
+var (
+    WorkflowTimeout = capitan.NewSignal("workflow.timeout", "Workflow timed out")
+)
+
+// Additional field keys
+var (
+    WorkflowID    = capitan.NewStringKey("workflow_id")
+    WorkflowState = capitan.NewStringKey("workflow_state")
+)
+
+func (wo *WorkflowOrchestrator) monitorTimeouts() {
+    ticker := time.NewTicker(1 * time.Minute)
+    defer ticker.Stop()
+
+    for range ticker.C {
+        wo.mu.Lock()
+        for id, workflow := range wo.workflows {
+            if time.Since(workflow.UpdatedAt) > 10*time.Minute {
+                log.Printf("Workflow %s timed out in state %s", id, workflow.State)
+
+                wo.c.EmitWithSeverity(context.Background(), capitan.SeverityCritical,
+                    WorkflowTimeout,
+                    WorkflowID.Field(id),
+                    WorkflowState.Field(workflow.State),
+                )
+
+                delete(wo.workflows, id)
+            }
+        }
+        wo.mu.Unlock()
+    }
+}
+```
+
+### 3. Retry Failed Steps
+
+```go
+type WorkflowInstance struct {
+    // ... existing fields
+    RetryCount int
+    MaxRetries int
+}
+
+func (wo *WorkflowOrchestrator) handlePaymentFailed(ctx context.Context, e *capitan.Event) {
+    orderID := OrderID.Extract(e)
+
+    workflow := wo.GetWorkflow(orderID)
+    if workflow == nil {
+        return
+    }
+
+    if workflow.RetryCount < workflow.MaxRetries {
+        log.Printf("[Workflow:%s] Retrying payment (attempt %d)", orderID, workflow.RetryCount+1)
+
+        workflow.RetryCount++
+
+        // Retry after backoff
+        time.Sleep(time.Duration(workflow.RetryCount) * time.Second)
+
+        wo.c.Emit(ctx, InventoryReserved,
+            OrderID.Field(orderID),
+            // ... fields
+        )
+    } else {
+        log.Printf("[Workflow:%s] Max retries reached, failing workflow", orderID)
+        wo.handlePaymentFailedFinal(ctx, e)
+    }
+}
+```
+
+## Next Steps
+
+- [Error Handling](./error-handling.md) - Retry and compensation patterns
+- [Event Patterns](../guides/patterns.md) - Saga pattern
+- [Testing Guide](../guides/testing.md) - Test workflows

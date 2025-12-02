@@ -10,7 +10,14 @@ var (
 	defaultOnce    sync.Once
 )
 
-// Capitan is an event coordination system.
+// Capitan is an event coordination system with per-signal worker goroutines.
+//
+// Each signal gets its own worker goroutine created lazily on first emission,
+// providing isolation between signals. Slow or panicking listeners on one signal
+// do not affect other signals.
+//
+// Use New to create isolated instances, or the module-level functions
+// (Emit, Hook, Observe, Shutdown) to use the default singleton.
 type Capitan struct {
 	registry     map[Signal][]*Listener
 	workers      map[Signal]*workerState
@@ -61,6 +68,17 @@ func Default() *Capitan {
 
 // Hook registers a callback for the given signal on the default instance.
 // Returns a Listener that can be closed to unregister.
+//
+// Example:
+//
+//	orderCreated := capitan.NewSignal("order.created", "New order placed")
+//	orderID := capitan.NewStringKey("order_id")
+//
+//	listener := capitan.Hook(orderCreated, func(ctx context.Context, e *capitan.Event) {
+//	    id, _ := orderID.From(e)
+//	    fmt.Printf("Order %s created\n", id)
+//	})
+//	defer listener.Close()
 func Hook(signal Signal, callback EventCallback) *Listener {
 	return defaultInstance().Hook(signal, callback)
 }
@@ -90,6 +108,21 @@ func (c *Capitan) Hook(signal Signal, callback EventCallback) *Listener {
 }
 
 // Emit dispatches an event with Info severity on the default instance.
+//
+// Events are queued asynchronously and processed by per-signal worker goroutines.
+// If no listeners are registered for the signal, the event is dropped silently.
+// If the context is canceled, the event may be dropped.
+//
+// Example:
+//
+//	orderCreated := capitan.NewSignal("order.created", "New order placed")
+//	orderID := capitan.NewStringKey("order_id")
+//	total := capitan.NewFloat64Key("total")
+//
+//	capitan.Emit(ctx, orderCreated,
+//	    orderID.Field("ORD-123"),
+//	    total.Field(99.99),
+//	)
 func Emit(ctx context.Context, signal Signal, fields ...Field) {
 	defaultInstance().Emit(ctx, signal, fields...)
 }
