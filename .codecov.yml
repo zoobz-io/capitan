@@ -40,7 +40,6 @@ ignore:
   - "docs/**/*"
   - ".github/**/*"
   - "vendor/**/*"
-  - "examples/**/*"
 
 comment:
   layout: "reach,diff,flags,tree"

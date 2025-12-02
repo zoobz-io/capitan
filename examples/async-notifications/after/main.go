@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Async Notifications - AFTER
 // ============================
 // Using capitan for fire-and-forget event processing.

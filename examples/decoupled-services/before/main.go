@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Decoupled Services - BEFORE
 // ============================
 // The typical approach: direct function calls between packages.

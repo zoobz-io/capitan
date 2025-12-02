@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Logging Evolution - BEFORE
 // ===========================
 // The typical approach: scattered log.Printf calls throughout the codebase.

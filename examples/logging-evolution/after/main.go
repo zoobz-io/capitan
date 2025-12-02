@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Logging Evolution - AFTER
 // ==========================
 // Using capitan for structured, type-safe event logging.

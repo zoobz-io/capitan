@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Async Notifications - BEFORE
 // =============================
 // The typical approach: synchronous calls blocking the API response.

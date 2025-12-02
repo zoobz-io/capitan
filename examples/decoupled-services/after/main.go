@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Decoupled Services - AFTER
 // ===========================
 // Using capitan for event-driven decoupling between services.
