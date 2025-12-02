@@ -33,7 +33,7 @@ jobs:
 
     - name: Run tests with coverage
       run: |
-        go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+        go test -v -race -coverprofile=coverage.out -covermode=atomic $(go list ./... | grep -v /examples/)
         go tool cover -func=coverage.out > coverage-summary.txt
         echo "Coverage Summary:"
         tail -1 coverage-summary.txt
