@@ -179,57 +179,6 @@ func TestEventCounterWaitForCount(t *testing.T) {
 	}
 }
 
-func TestSignalCapture(t *testing.T) {
-	c := capitan.New(capitan.WithSyncMode())
-	defer c.Shutdown()
-
-	sig1 := capitan.NewSignal("test.sigcap.one", "Signal one")
-	sig2 := capitan.NewSignal("test.sigcap.two", "Signal two")
-	key := capitan.NewStringKey("msg")
-
-	capture := NewSignalCapture(sig1)
-	c.Hook(sig1, capture.Handler())
-	c.Hook(sig2, capture.Handler())
-
-	c.Emit(context.Background(), sig1, key.Field("first"))
-	c.Emit(context.Background(), sig2, key.Field("second"))
-	c.Emit(context.Background(), sig1, key.Field("third"))
-
-	if capture.Count() != 2 {
-		t.Errorf("expected 2 events for sig1, got %d", capture.Count())
-	}
-
-	events := capture.Events()
-	for _, e := range events {
-		if e.Signal() != sig1 {
-			t.Errorf("expected signal %v, got %v", sig1, e.Signal())
-		}
-	}
-}
-
-func TestSignalCaptureReset(t *testing.T) {
-	c := capitan.New(capitan.WithSyncMode())
-	defer c.Shutdown()
-
-	sig := capitan.NewSignal("test.sigcap.reset", "Signal reset")
-	key := capitan.NewStringKey("msg")
-
-	capture := NewSignalCapture(sig)
-	c.Hook(sig, capture.Handler())
-
-	c.Emit(context.Background(), sig, key.Field("test"))
-
-	if capture.Count() != 1 {
-		t.Errorf("expected 1, got %d", capture.Count())
-	}
-
-	capture.Reset()
-
-	if capture.Count() != 0 {
-		t.Errorf("expected 0 after reset, got %d", capture.Count())
-	}
-}
-
 func TestPanicRecorder(t *testing.T) {
 	sig := capitan.NewSignal("test.panic", "Panic signal")
 	key := capitan.NewStringKey("msg")

@@ -134,56 +134,6 @@ func (ec *EventCounter) WaitForCount(n int64, timeout time.Duration) bool {
 	return false
 }
 
-// SignalCapture captures events for a specific signal.
-// Useful for filtering events by signal in tests.
-type SignalCapture struct {
-	signal capitan.Signal
-	events []*capitan.Event
-	mu     sync.Mutex
-}
-
-// NewSignalCapture creates a new SignalCapture for the given signal.
-func NewSignalCapture(signal capitan.Signal) *SignalCapture {
-	return &SignalCapture{
-		signal: signal,
-		events: make([]*capitan.Event, 0),
-	}
-}
-
-// Handler returns an EventCallback that captures events for the signal.
-func (sc *SignalCapture) Handler() capitan.EventCallback {
-	return func(_ context.Context, e *capitan.Event) {
-		if e.Signal() == sc.signal {
-			sc.mu.Lock()
-			defer sc.mu.Unlock()
-			sc.events = append(sc.events, e)
-		}
-	}
-}
-
-// Events returns a copy of all captured events for the signal.
-func (sc *SignalCapture) Events() []*capitan.Event {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	result := make([]*capitan.Event, len(sc.events))
-	copy(result, sc.events)
-	return result
-}
-
-// Count returns the number of captured events for the signal.
-func (sc *SignalCapture) Count() int {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return len(sc.events)
-}
-
-// Reset clears all captured events.
-func (sc *SignalCapture) Reset() {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	sc.events = sc.events[:0]
-}
-
 // PanicRecorder records panics from listeners for testing.
 // Useful for testing panic recovery behavior.
 type PanicRecorder struct {
