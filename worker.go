@@ -34,6 +34,33 @@ func (c *Capitan) Error(ctx context.Context, signal Signal, fields ...Field) {
 	c.emitWithSeverity(ctx, signal, SeverityError, fields...)
 }
 
+// Replay re-emits a historical event, preserving its original timestamp and severity.
+// The event is marked as a replay, accessible via Event.IsReplay().
+// Replay events are processed synchronously and are not pooled.
+//
+// Use NewEvent to construct events from stored data:
+//
+//	e := capitan.NewEvent(signal, severity, timestamp, fields...)
+//	c.Replay(ctx, e)
+func (c *Capitan) Replay(ctx context.Context, e *Event) {
+	// Mark as replay and set context
+	e.replay = true
+	e.ctx = ctx
+
+	signal := e.signal
+
+	// Ensure signal has listeners (attach observers if needed)
+	c.mu.Lock()
+	if _, exists := c.registry[signal]; !exists {
+		c.registry[signal] = nil
+		c.attachObservers(signal)
+	}
+	c.mu.Unlock()
+
+	// Process synchronously
+	c.processEvent(signal, e)
+}
+
 // emitWithSeverity dispatches an event with the given severity level.
 // Internal function used by public emit methods.
 func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity Severity, fields ...Field) {
@@ -102,6 +129,7 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 
 				// If still no listeners after observer attachment, drop event
 				if len(c.registry[signal]) == 0 {
+					c.droppedEvents++
 					c.mu.Unlock()
 					return
 				}
@@ -161,13 +189,15 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 }
 
 // processEvent invokes all listeners for a signal with the given event.
-// Handles panic recovery and returns event to pool.
+// Handles panic recovery and returns pooled events to pool.
 // Skips processing if the event's context has been canceled.
 func (c *Capitan) processEvent(signal Signal, event *Event) {
 	// Check if context was canceled while event was queued
 	if event.ctx.Err() != nil {
-		// Skip canceled events
-		eventPool.Put(event)
+		// Skip canceled events, return pooled events to pool
+		if !event.replay {
+			eventPool.Put(event)
+		}
 		return
 	}
 
@@ -189,8 +219,10 @@ func (c *Capitan) processEvent(signal Signal, event *Event) {
 		}()
 	}
 
-	// Return event to pool
-	eventPool.Put(event)
+	// Return pooled events to pool (replay events are not pooled)
+	if !event.replay {
+		eventPool.Put(event)
+	}
 }
 
 // drainEvents processes all remaining events in the queue then returns.

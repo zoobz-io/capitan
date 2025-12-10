@@ -34,6 +34,31 @@ func (k GenericKey[T]) From(e *Event) (T, bool) {
 	return zero, false
 }
 
+// ExtractFromFields extracts the typed value for this key from a field slice.
+// Returns the value if present, or the zero value if not found or wrong type.
+//
+// This method is primarily useful in tests when working with captured events,
+// where you have a []Field slice rather than an *Event pointer.
+//
+// Example:
+//
+//	capture := capitantesting.NewEventCapture()
+//	c.Hook(signal, capture.Handler())
+//	// ... emit events ...
+//	events := capture.Events()
+//	userID := userKey.ExtractFromFields(events[0].Fields)
+func (k GenericKey[T]) ExtractFromFields(fields []Field) T {
+	var zero T
+	for _, f := range fields {
+		if f.Key().Name() == k.name {
+			if gf, ok := f.(GenericField[T]); ok {
+				return gf.Get()
+			}
+		}
+	}
+	return zero
+}
+
 // NewKey creates a GenericKey for any type T with the given name and variant.
 // Use a namespaced variant string to avoid collisions (e.g., "myapp.OrderInfo").
 //

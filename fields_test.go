@@ -603,3 +603,58 @@ func TestErrorKey(t *testing.T) {
 		t.Errorf("expected variant %v, got %v", VariantError, key.Variant())
 	}
 }
+
+func TestExtractFromFields(t *testing.T) {
+	// Create field slice (simulating captured event fields)
+	strKey := NewStringKey("name")
+	intKey := NewIntKey("count")
+	boolKey := NewBoolKey("active")
+
+	fields := []Field{
+		strKey.Field("alice"),
+		intKey.Field(42),
+		boolKey.Field(true),
+	}
+
+	// Test extraction
+	if got := strKey.ExtractFromFields(fields); got != "alice" {
+		t.Errorf("StringKey.ExtractFromFields: expected %q, got %q", "alice", got)
+	}
+	if got := intKey.ExtractFromFields(fields); got != 42 {
+		t.Errorf("IntKey.ExtractFromFields: expected %d, got %d", 42, got)
+	}
+	if got := boolKey.ExtractFromFields(fields); got != true {
+		t.Errorf("BoolKey.ExtractFromFields: expected %v, got %v", true, got)
+	}
+
+	// Test missing key returns zero value
+	missingKey := NewStringKey("missing")
+	if got := missingKey.ExtractFromFields(fields); got != "" {
+		t.Errorf("ExtractFromFields (missing): expected empty string, got %q", got)
+	}
+
+	// Test type mismatch returns zero value
+	wrongTypeKey := NewIntKey("name") // Same name as strKey but different type
+	if got := wrongTypeKey.ExtractFromFields(fields); got != 0 {
+		t.Errorf("ExtractFromFields (type mismatch): expected 0, got %d", got)
+	}
+}
+
+func TestExtractFromFieldsCustomType(t *testing.T) {
+	type CustomData struct {
+		Value string
+		Count int
+	}
+
+	customKey := NewKey[CustomData]("custom", "test.CustomData")
+	expectedData := CustomData{Value: "test", Count: 42}
+
+	fields := []Field{
+		customKey.Field(expectedData),
+	}
+
+	got := customKey.ExtractFromFields(fields)
+	if got.Value != expectedData.Value || got.Count != expectedData.Count {
+		t.Errorf("ExtractFromFields (custom type): expected %+v, got %+v", expectedData, got)
+	}
+}

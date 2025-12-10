@@ -293,3 +293,79 @@ func TestSeverityMethods(t *testing.T) {
 		})
 	}
 }
+
+func TestNewEvent(t *testing.T) {
+	sig := NewSignal("test.newevent", "Test NewEvent signal")
+	orderID := NewStringKey("order_id")
+	total := NewFloat64Key("total")
+
+	timestamp := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	e := NewEvent(sig, SeverityWarn, timestamp,
+		orderID.Field("ORD-123"),
+		total.Field(99.99),
+	)
+
+	if e.Signal() != sig {
+		t.Errorf("expected signal %v, got %v", sig, e.Signal())
+	}
+
+	if e.Severity() != SeverityWarn {
+		t.Errorf("expected severity %v, got %v", SeverityWarn, e.Severity())
+	}
+
+	if !e.Timestamp().Equal(timestamp) {
+		t.Errorf("expected timestamp %v, got %v", timestamp, e.Timestamp())
+	}
+
+	id, ok := orderID.From(e)
+	if !ok {
+		t.Fatal("order_id field not found")
+	}
+	if id != "ORD-123" {
+		t.Errorf("expected order_id %q, got %q", "ORD-123", id)
+	}
+
+	amt, ok := total.From(e)
+	if !ok {
+		t.Fatal("total field not found")
+	}
+	if amt != 99.99 {
+		t.Errorf("expected total %v, got %v", 99.99, amt)
+	}
+}
+
+func TestNewEventNotPooled(t *testing.T) {
+	sig := NewSignal("test.newevent.notpooled", "Test NewEvent not pooled signal")
+	key := NewStringKey("value")
+
+	// NewEvent should not be pooled - safe to hold reference
+	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+
+	// Verify IsReplay is false initially (set to true by Replay)
+	if e.IsReplay() {
+		t.Error("new event should not be marked as replay before Replay() is called")
+	}
+}
+
+func TestIsReplay(t *testing.T) {
+	sig := NewSignal("test.isreplay", "Test IsReplay signal")
+	key := NewStringKey("value")
+
+	// Regular emitted events should not be replays
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	var emittedEvent *Event
+	c.Hook(sig, func(_ context.Context, e *Event) {
+		emittedEvent = e
+	})
+
+	c.Emit(context.Background(), sig, key.Field("test"))
+
+	if emittedEvent == nil {
+		t.Fatal("event not received")
+	}
+	if emittedEvent.IsReplay() {
+		t.Error("emitted event should not be marked as replay")
+	}
+}

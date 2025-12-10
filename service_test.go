@@ -479,3 +479,46 @@ func TestDefault(t *testing.T) {
 		t.Error("Default() should return the same instance")
 	}
 }
+
+func TestModuleLevelReplay(t *testing.T) {
+	sig := NewSignal("test.module.replay", "Test module replay signal")
+	orderID := NewStringKey("order_id")
+
+	var receivedEvent *Event
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	listener := Hook(sig, func(_ context.Context, e *Event) {
+		receivedEvent = e
+		wg.Done()
+	})
+	defer listener.Close()
+
+	// Create a historical event
+	timestamp := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	e := NewEvent(sig, SeverityError, timestamp,
+		orderID.Field("ORD-789"),
+	)
+
+	// Replay via module-level function
+	Replay(context.Background(), e)
+
+	wg.Wait()
+
+	if receivedEvent == nil {
+		t.Fatal("replayed event not received via module-level Replay")
+	}
+
+	if !receivedEvent.IsReplay() {
+		t.Error("event should be marked as replay")
+	}
+
+	if receivedEvent.Severity() != SeverityError {
+		t.Errorf("expected severity %v, got %v", SeverityError, receivedEvent.Severity())
+	}
+
+	id, ok := orderID.From(receivedEvent)
+	if !ok || id != "ORD-789" {
+		t.Errorf("expected order_id %q, got %q", "ORD-789", id)
+	}
+}

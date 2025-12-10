@@ -32,6 +32,9 @@ type Event struct {
 
 	// severity indicates the logging severity level of this event.
 	severity Severity
+
+	// replay indicates this event was replayed from storage rather than emitted live.
+	replay bool
 }
 
 // Signal returns the event's signal identifier.
@@ -55,6 +58,11 @@ func (e *Event) Severity() Severity {
 	return e.severity
 }
 
+// IsReplay returns true if this event was replayed from storage.
+func (e *Event) IsReplay() bool {
+	return e.replay
+}
+
 // newEvent creates an Event with the given context, signal, severity and fields.
 // Events are pooled internally to reduce allocations.
 func newEvent(ctx context.Context, signal Signal, severity Severity, timestamp time.Time, fields ...Field) *Event {
@@ -63,6 +71,7 @@ func newEvent(ctx context.Context, signal Signal, severity Severity, timestamp t
 	e.timestamp = timestamp
 	e.ctx = ctx
 	e.severity = severity
+	e.replay = false
 
 	// Clear existing fields
 	for k := range e.fields {
@@ -74,6 +83,30 @@ func newEvent(ctx context.Context, signal Signal, severity Severity, timestamp t
 		e.fields[field.Key().Name()] = field
 	}
 
+	return e
+}
+
+// NewEvent creates an Event for replay purposes.
+// Unlike internally emitted events, this event is not pooled.
+// Use this to construct events from stored data for replay.
+//
+// Example:
+//
+//	e := capitan.NewEvent(orderCreated, capitan.SeverityInfo, storedTimestamp,
+//	    orderID.Field("ORD-123"),
+//	    total.Field(99.99),
+//	)
+//	capitan.Replay(ctx, e)
+func NewEvent(signal Signal, severity Severity, timestamp time.Time, fields ...Field) *Event {
+	e := &Event{
+		signal:    signal,
+		severity:  severity,
+		timestamp: timestamp,
+		fields:    make(map[string]Field, len(fields)),
+	}
+	for _, field := range fields {
+		e.fields[field.Key().Name()] = field
+	}
 	return e
 }
 

@@ -547,3 +547,208 @@ func TestEmitDuringShutdownNoWorker(t *testing.T) {
 		t.Error("expected event to be dropped during shutdown, but it was received")
 	}
 }
+
+func TestReplayBasic(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.replay.basic", "Test replay basic signal")
+	orderID := NewStringKey("order_id")
+	total := NewFloat64Key("total")
+
+	var receivedEvent *Event
+	c.Hook(sig, func(_ context.Context, e *Event) {
+		receivedEvent = e
+	})
+
+	// Create a historical event
+	timestamp := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	e := NewEvent(sig, SeverityWarn, timestamp,
+		orderID.Field("ORD-123"),
+		total.Field(99.99),
+	)
+
+	// Replay the event
+	c.Replay(context.Background(), e)
+
+	if receivedEvent == nil {
+		t.Fatal("replayed event not received")
+	}
+
+	// Verify it's marked as replay
+	if !receivedEvent.IsReplay() {
+		t.Error("replayed event should be marked as replay")
+	}
+
+	// Verify original timestamp preserved
+	if !receivedEvent.Timestamp().Equal(timestamp) {
+		t.Errorf("expected timestamp %v, got %v", timestamp, receivedEvent.Timestamp())
+	}
+
+	// Verify original severity preserved
+	if receivedEvent.Severity() != SeverityWarn {
+		t.Errorf("expected severity %v, got %v", SeverityWarn, receivedEvent.Severity())
+	}
+
+	// Verify fields preserved
+	id, ok := orderID.From(receivedEvent)
+	if !ok || id != "ORD-123" {
+		t.Errorf("expected order_id %q, got %q", "ORD-123", id)
+	}
+}
+
+func TestReplayProcessesSynchronously(t *testing.T) {
+	c := New() // async mode
+	defer c.Shutdown()
+
+	sig := NewSignal("test.replay.sync", "Test replay sync signal")
+	key := NewStringKey("value")
+
+	processed := false
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		processed = true
+	})
+
+	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+
+	// Replay should process synchronously - no need to wait
+	c.Replay(context.Background(), e)
+
+	// Should be processed immediately (synchronously)
+	if !processed {
+		t.Error("replay should process synchronously, but event was not processed immediately")
+	}
+}
+
+func TestReplayWithObserver(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.replay.observer", "Test replay observer signal")
+	key := NewStringKey("value")
+
+	var observerReceived *Event
+	c.Observe(func(_ context.Context, e *Event) {
+		observerReceived = e
+	})
+
+	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+	c.Replay(context.Background(), e)
+
+	if observerReceived == nil {
+		t.Fatal("observer should receive replayed event")
+	}
+
+	if !observerReceived.IsReplay() {
+		t.Error("observer should see event marked as replay")
+	}
+}
+
+func TestReplayNewSignal(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	// Signal that has never been used before
+	sig := NewSignal("test.replay.newsignal", "Test replay new signal")
+	key := NewStringKey("value")
+
+	var observerReceived *Event
+	c.Observe(func(_ context.Context, e *Event) {
+		observerReceived = e
+	})
+
+	// Replay to a signal that has no prior listeners
+	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+	c.Replay(context.Background(), e)
+
+	// Observer should still receive it (observer attaches to new signals)
+	if observerReceived == nil {
+		t.Fatal("observer should receive replayed event on new signal")
+	}
+}
+
+func TestReplayContextPropagated(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.replay.context", "Test replay context signal")
+	key := NewStringKey("value")
+
+	type ctxKey string
+	const testKey ctxKey = "request_id"
+	expectedValue := "REQ-456"
+
+	var receivedCtx context.Context
+	c.Hook(sig, func(ctx context.Context, _ *Event) {
+		receivedCtx = ctx
+	})
+
+	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+
+	// Replay with context containing a value
+	ctx := context.WithValue(context.Background(), testKey, expectedValue)
+	c.Replay(ctx, e)
+
+	if receivedCtx == nil {
+		t.Fatal("context not received")
+	}
+
+	value := receivedCtx.Value(testKey)
+	if value != expectedValue {
+		t.Errorf("expected context value %q, got %v", expectedValue, value)
+	}
+}
+
+func TestReplayNotPooled(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.replay.notpooled", "Test replay not pooled signal")
+	key := NewStringKey("value")
+
+	var receivedEvent *Event
+	c.Hook(sig, func(_ context.Context, e *Event) {
+		receivedEvent = e
+	})
+
+	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field("original"))
+	c.Replay(context.Background(), e)
+
+	// After replay, the event should still be usable (not returned to pool)
+	// Verify fields are still accessible
+	val, ok := key.From(e)
+	if !ok || val != "original" {
+		t.Error("event should still be usable after replay (not pooled)")
+	}
+
+	// The received event should be the same object
+	if receivedEvent != e {
+		t.Error("replay should pass the same event object to listeners")
+	}
+}
+
+func TestReplayCanceledContext(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.replay.canceled", "Test replay canceled signal")
+	key := NewStringKey("value")
+
+	received := false
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		received = true
+	})
+
+	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+
+	// Replay with canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c.Replay(ctx, e)
+
+	// Event should be skipped due to canceled context
+	if received {
+		t.Error("replay with canceled context should skip event processing")
+	}
+}

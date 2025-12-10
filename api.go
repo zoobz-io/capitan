@@ -141,6 +141,12 @@ type Stats struct {
 	// ActiveWorkers is the number of worker goroutines currently running.
 	ActiveWorkers int
 
+	// SignalCount is the total number of unique signals that have been registered.
+	SignalCount int
+
+	// DroppedEvents is the total number of events dropped due to no listeners.
+	DroppedEvents uint64
+
 	// QueueDepths maps each signal to the number of events queued in its buffer.
 	QueueDepths map[Signal]int
 

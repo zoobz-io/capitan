@@ -19,18 +19,19 @@ var (
 // Use New to create isolated instances, or the module-level functions
 // (Emit, Hook, Observe, Shutdown) to use the default singleton.
 type Capitan struct {
-	registry     map[Signal][]*Listener
-	workers      map[Signal]*workerState
-	observers    []*Observer
-	shutdown     chan struct{}
-	shutdownOnce sync.Once
-	wg           sync.WaitGroup
-	mu           sync.RWMutex
-	bufferSize   int
-	panicHandler PanicHandler
-	syncMode     bool
-	emitCounts   map[Signal]uint64
-	fieldSchemas map[Signal][]Key
+	registry      map[Signal][]*Listener
+	workers       map[Signal]*workerState
+	observers     []*Observer
+	shutdown      chan struct{}
+	shutdownOnce  sync.Once
+	wg            sync.WaitGroup
+	mu            sync.RWMutex
+	bufferSize    int
+	panicHandler  PanicHandler
+	syncMode      bool
+	emitCounts    map[Signal]uint64
+	droppedEvents uint64
+	fieldSchemas  map[Signal][]Key
 }
 
 // New creates a new Capitan instance with optional configuration.
@@ -147,6 +148,21 @@ func Error(ctx context.Context, signal Signal, fields ...Field) {
 	defaultInstance().Error(ctx, signal, fields...)
 }
 
+// Replay re-emits a historical event on the default instance.
+// The event is marked as a replay, preserving its original timestamp and severity.
+// Useful for replaying events from storage for debugging or backfilling.
+//
+// Example:
+//
+//	e := capitan.NewEvent(orderCreated, capitan.SeverityInfo, storedTimestamp,
+//	    orderID.Field("ORD-123"),
+//	    total.Field(99.99),
+//	)
+//	capitan.Replay(ctx, e)
+func Replay(ctx context.Context, e *Event) {
+	defaultInstance().Replay(ctx, e)
+}
+
 // unregister removes a listener from the registry.
 func (c *Capitan) unregister(listener *Listener) {
 	c.mu.Lock()
@@ -177,13 +193,15 @@ func (c *Capitan) unregister(listener *Listener) {
 
 // Stats returns runtime metrics for the Capitan instance.
 // Provides visibility into active workers, queue depths, listener counts,
-// emit counts, and field schemas.
+// emit counts, dropped events, and field schemas.
 func (c *Capitan) Stats() Stats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	stats := Stats{
 		ActiveWorkers:  len(c.workers),
+		SignalCount:    len(c.registry),
+		DroppedEvents:  c.droppedEvents,
 		QueueDepths:    make(map[Signal]int, len(c.workers)),
 		ListenerCounts: make(map[Signal]int, len(c.registry)),
 		EmitCounts:     make(map[Signal]uint64, len(c.emitCounts)),
