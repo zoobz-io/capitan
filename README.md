@@ -120,6 +120,14 @@ listener := capitan.Hook(userLogin, func(ctx context.Context, e *capitan.Event) 
 })
 ```
 
+**One-time listeners** fire once and auto-unregister:
+```go
+listener := capitan.HookOnce(userLogin, func(ctx context.Context, e *capitan.Event) {
+    // This runs exactly once, then the listener is removed
+    fmt.Println("First login received!")
+})
+```
+
 **Observers** watch all signals (dynamic):
 ```go
 // Observe all signals - receives every event
@@ -538,7 +546,12 @@ fields := e.Fields() // Returns []Field
 // Access metadata
 signal := e.Signal()       // Signal identifier
 timestamp := e.Timestamp() // When event was created
+
+// Clone an event (safe to retain beyond callback)
+clone := e.Clone()
 ```
+
+**Note on event pooling**: Events are pooled internally and recycled after all listeners complete. If you need to retain an event beyond your callback (e.g., for async processing or storage), use `Clone()` to create a safe copy.
 
 ## Performance
 

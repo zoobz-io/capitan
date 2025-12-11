@@ -1,6 +1,9 @@
 package capitan
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // EventCallback is a function that handles an Event.
 // The context is inherited from the Emit call and can be used for cancellation,
@@ -20,4 +23,32 @@ type Listener struct {
 // Close removes this listener from the registry, preventing future callbacks.
 func (l *Listener) Close() {
 	l.capitan.unregister(l)
+}
+
+// HookOnce registers a callback that fires only once, then automatically unregisters.
+// Returns a Listener that can be closed early to prevent the callback from firing.
+//
+// Example:
+//
+//	listener := capitan.HookOnce(orderCreated, func(ctx context.Context, e *capitan.Event) {
+//	    // This handler runs at most once
+//	    fmt.Println("First order received!")
+//	})
+func HookOnce(signal Signal, callback EventCallback) *Listener {
+	return defaultInstance().HookOnce(signal, callback)
+}
+
+// HookOnce registers a callback that fires only once, then automatically unregisters.
+// Returns a Listener that can be closed early to prevent the callback from firing.
+func (c *Capitan) HookOnce(signal Signal, callback EventCallback) *Listener {
+	var listener *Listener
+	var once sync.Once
+	listener = c.Hook(signal, func(ctx context.Context, e *Event) {
+		once.Do(func() {
+			callback(ctx, e)
+			// Defer close to avoid unregistering while holding lock
+			go listener.Close()
+		})
+	})
+	return listener
 }

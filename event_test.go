@@ -369,3 +369,83 @@ func TestIsReplay(t *testing.T) {
 		t.Error("emitted event should not be marked as replay")
 	}
 }
+
+func TestEventClone(t *testing.T) {
+	sig := NewSignal("test.clone", "Test clone signal")
+	strKey := NewStringKey("name")
+	intKey := NewIntKey("count")
+
+	timestamp := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
+	original := newEvent(context.Background(), sig, SeverityWarn, timestamp,
+		strKey.Field("test"),
+		intKey.Field(42),
+	)
+
+	clone := original.Clone()
+
+	// Verify all fields are copied
+	if clone.Signal() != original.Signal() {
+		t.Errorf("signal mismatch: expected %v, got %v", original.Signal(), clone.Signal())
+	}
+	if clone.Severity() != original.Severity() {
+		t.Errorf("severity mismatch: expected %v, got %v", original.Severity(), clone.Severity())
+	}
+	if !clone.Timestamp().Equal(original.Timestamp()) {
+		t.Errorf("timestamp mismatch: expected %v, got %v", original.Timestamp(), clone.Timestamp())
+	}
+	if clone.Context() != original.Context() {
+		t.Errorf("context mismatch")
+	}
+	if clone.IsReplay() != original.IsReplay() {
+		t.Errorf("replay mismatch: expected %v, got %v", original.IsReplay(), clone.IsReplay())
+	}
+
+	// Verify field values
+	strVal, ok := strKey.From(clone)
+	if !ok || strVal != "test" {
+		t.Errorf("string field mismatch: expected 'test', got '%s'", strVal)
+	}
+	intVal, ok := intKey.From(clone)
+	if !ok || intVal != 42 {
+		t.Errorf("int field mismatch: expected 42, got %d", intVal)
+	}
+
+	// Verify clone is independent (different map instance)
+	if len(clone.Fields()) != len(original.Fields()) {
+		t.Errorf("fields count mismatch: expected %d, got %d", len(original.Fields()), len(clone.Fields()))
+	}
+}
+
+func TestEventCloneIndependence(t *testing.T) {
+	sig := NewSignal("test.clone.independence", "Test clone independence signal")
+	key := NewStringKey("value")
+
+	original := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field("original"))
+	clone := original.Clone()
+
+	// Return original to pool
+	eventPool.Put(original)
+
+	// Clone should still be valid
+	val, ok := key.From(clone)
+	if !ok {
+		t.Fatal("clone field not found after original returned to pool")
+	}
+	if val != "original" {
+		t.Errorf("expected 'original', got '%s'", val)
+	}
+}
+
+func TestEventCloneReplay(t *testing.T) {
+	sig := NewSignal("test.clone.replay", "Test clone replay signal")
+	key := NewStringKey("value")
+
+	original := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+	original.replay = true
+
+	clone := original.Clone()
+
+	if !clone.IsReplay() {
+		t.Error("clone should preserve replay flag")
+	}
+}

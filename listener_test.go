@@ -3,6 +3,7 @@ package capitan
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -339,5 +340,184 @@ func TestEmitToClosedWorkerDropsEvent(t *testing.T) {
 
 	if finalCount != 1 {
 		t.Errorf("expected 1 event received, got %d", finalCount)
+	}
+}
+
+func TestHookOnceFiresOnlyOnce(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.hookonce", "Test hook once signal")
+	key := NewStringKey("value")
+
+	count := 0
+
+	c.HookOnce(sig, func(_ context.Context, _ *Event) {
+		count++
+	})
+
+	// Emit multiple events
+	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field("second"))
+	c.Emit(context.Background(), sig, key.Field("third"))
+
+	if count != 1 {
+		t.Errorf("expected callback to fire once, got %d", count)
+	}
+}
+
+func TestHookOnceReceivesCorrectEvent(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.hookonce.event", "Test hook once event signal")
+	key := NewStringKey("value")
+
+	var received string
+
+	c.HookOnce(sig, func(_ context.Context, e *Event) {
+		received, _ = key.From(e)
+	})
+
+	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field("second"))
+
+	if received != "first" {
+		t.Errorf("expected 'first', got '%s'", received)
+	}
+}
+
+func TestHookOnceCloseBeforeFiring(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.hookonce.close", "Test hook once close signal")
+	key := NewStringKey("value")
+
+	count := 0
+
+	listener := c.HookOnce(sig, func(_ context.Context, _ *Event) {
+		count++
+	})
+
+	// Close before any events
+	listener.Close()
+
+	// Emit events - should not be received
+	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field("second"))
+
+	if count != 0 {
+		t.Errorf("expected callback to not fire, got %d", count)
+	}
+}
+
+func TestHookOnceCloseIdempotent(_ *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.hookonce.idempotent", "Test hook once idempotent signal")
+	key := NewStringKey("value")
+
+	listener := c.HookOnce(sig, func(_ context.Context, _ *Event) {})
+
+	// Emit to trigger auto-close
+	c.Emit(context.Background(), sig, key.Field("first"))
+
+	// Give time for async close
+	time.Sleep(10 * time.Millisecond)
+
+	// Manual close should not panic
+	listener.Close()
+	listener.Close()
+}
+
+func TestHookOnceAsync(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.hookonce.async", "Test hook once async signal")
+	key := NewStringKey("value")
+
+	var count int32
+	done := make(chan struct{})
+
+	c.HookOnce(sig, func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count, 1)
+		close(done)
+	})
+
+	// Emit multiple events rapidly
+	for i := 0; i < 10; i++ {
+		c.Emit(context.Background(), sig, key.Field("event"))
+	}
+
+	// Wait for callback
+	select {
+	case <-done:
+		// Success
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for callback")
+	}
+
+	// Give time for any additional (incorrect) invocations
+	time.Sleep(50 * time.Millisecond)
+
+	if atomic.LoadInt32(&count) != 1 {
+		t.Errorf("expected callback to fire once, got %d", count)
+	}
+}
+
+func TestHookOnceConcurrent(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.hookonce.concurrent", "Test hook once concurrent signal")
+	key := NewStringKey("value")
+
+	var count int32
+
+	c.HookOnce(sig, func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count, 1)
+	})
+
+	// Emit from multiple goroutines
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c.Emit(context.Background(), sig, key.Field("event"))
+		}()
+	}
+	wg.Wait()
+	c.Shutdown()
+
+	if atomic.LoadInt32(&count) != 1 {
+		t.Errorf("expected callback to fire once, got %d", count)
+	}
+}
+
+func TestModuleLevelHookOnce(t *testing.T) {
+	// Reset default instance for clean test
+	defaultOnce = sync.Once{}
+	defaultCapitan = nil
+	Configure(WithSyncMode())
+	defer Shutdown()
+
+	sig := NewSignal("test.module.hookonce", "Test module hook once signal")
+	key := NewStringKey("value")
+
+	count := 0
+
+	HookOnce(sig, func(_ context.Context, _ *Event) {
+		count++
+	})
+
+	Emit(context.Background(), sig, key.Field("first"))
+	Emit(context.Background(), sig, key.Field("second"))
+
+	if count != 1 {
+		t.Errorf("expected 1, got %d", count)
 	}
 }

@@ -124,3 +124,21 @@ func (e Event) Fields() []Field {
 	}
 	return result
 }
+
+// Clone creates a deep copy of the event that is safe to retain.
+// Use this when you need to store or pass an event beyond the listener callback,
+// as pooled events are recycled after all listeners complete.
+func (e *Event) Clone() *Event {
+	clone := &Event{
+		signal:    e.signal,
+		timestamp: e.timestamp,
+		ctx:       e.ctx,
+		severity:  e.severity,
+		replay:    e.replay,
+		fields:    make(map[string]Field, len(e.fields)),
+	}
+	for k, v := range e.fields {
+		clone.fields[k] = v
+	}
+	return clone
+}
