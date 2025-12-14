@@ -2,7 +2,9 @@ package capitan
 
 import (
 	"context"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -751,4 +753,94 @@ func TestReplayCanceledContext(t *testing.T) {
 	if received {
 		t.Error("replay with canceled context should skip event processing")
 	}
+}
+
+func TestIsShutdown(t *testing.T) {
+	c := New()
+
+	if c.IsShutdown() {
+		t.Error("new instance should not be shutdown")
+	}
+
+	c.Shutdown()
+
+	if !c.IsShutdown() {
+		t.Error("instance should be shutdown after Shutdown()")
+	}
+}
+
+func TestDrainMethod(t *testing.T) {
+	c := New(WithBufferSize(16))
+
+	sig := NewSignal("test.drain.method", "Test drain method")
+	key := NewIntKey("value")
+
+	var count int32
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		time.Sleep(10 * time.Millisecond)
+		atomic.AddInt32(&count, 1)
+	})
+
+	for i := 0; i < 5; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := c.Drain(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if atomic.LoadInt32(&count) != 5 {
+		t.Errorf("expected 5 events drained, got %d", count)
+	}
+
+	c.Shutdown()
+}
+
+func TestDrainTimeout(t *testing.T) {
+	c := New(WithBufferSize(16))
+
+	sig := NewSignal("test.drain.timeout", "Test drain timeout")
+	key := NewIntKey("value")
+
+	block := make(chan struct{})
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block
+	})
+
+	c.Emit(context.Background(), sig, key.Field(1))
+
+	// Give worker time to start
+	time.Sleep(10 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	err := c.Drain(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got %v", err)
+	}
+
+	close(block)
+	c.Shutdown()
+}
+
+func TestDrainNoWorkers(t *testing.T) {
+	c := New()
+
+	// No emissions, no workers
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := c.Drain(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	c.Shutdown()
 }

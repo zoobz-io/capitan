@@ -21,8 +21,30 @@ type Listener struct {
 }
 
 // Close removes this listener from the registry, preventing future callbacks.
+// Blocks until all events queued before Close was called have been processed.
 func (l *Listener) Close() {
-	l.capitan.unregister(l)
+	c := l.capitan
+
+	// In async mode, wait for queued events to drain before unregistering
+	if !c.syncMode {
+		c.mu.RLock()
+		worker, exists := c.workers[l.signal]
+		c.mu.RUnlock()
+
+		if exists {
+			marker := make(chan struct{})
+			select {
+			case worker.markers <- marker:
+				<-marker // Block until worker processes marker
+			case <-worker.done:
+				// Worker already shutting down
+			case <-c.shutdown:
+				// Global shutdown in progress
+			}
+		}
+	}
+
+	c.unregister(l)
 }
 
 // HookOnce registers a callback that fires only once, then automatically unregisters.

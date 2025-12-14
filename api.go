@@ -64,6 +64,19 @@ const (
 	SeverityError Severity = "ERROR"
 )
 
+// severityOrder maps severity levels to numeric values for comparison.
+var severityOrder = map[Severity]int{
+	SeverityDebug: 0,
+	SeverityInfo:  1,
+	SeverityWarn:  2,
+	SeverityError: 3,
+}
+
+// severityAtLeast returns true if s is at or above the minimum severity level.
+func severityAtLeast(s, minLevel Severity) bool {
+	return severityOrder[s] >= severityOrder[minLevel]
+}
+
 // Key represents a typed semantic identifier for a field.
 // Each Key implementation is bound to a specific Variant, ensuring type safety.
 type Key interface {
@@ -132,8 +145,19 @@ func (f GenericField[T]) Get() T { return f.value }
 
 // workerState manages the lifecycle of a signal's worker goroutine.
 type workerState struct {
-	events chan *Event   // buffered channel for queuing events
-	done   chan struct{} // signals worker to drain and exit
+	events  chan *Event        // buffered channel for queuing events
+	done    chan struct{}      // signals worker to drain and exit
+	markers chan chan struct{} // synchronization points for drain-on-close
+
+	// Per-signal configuration (resolved once at worker creation)
+	config      SignalConfig
+	rateLimiter rateLimiter
+}
+
+// rateLimiter implements a token bucket for rate limiting events.
+type rateLimiter struct {
+	tokens    float64
+	lastCheck int64 // Unix nano timestamp
 }
 
 // Stats provides runtime metrics for a Capitan instance.

@@ -32,6 +32,9 @@ type Capitan struct {
 	emitCounts    map[Signal]uint64
 	droppedEvents uint64
 	fieldSchemas  map[Signal][]Key
+
+	// Per-signal configuration (single source of truth)
+	config Config
 }
 
 // New creates a new Capitan instance with optional configuration.
@@ -44,6 +47,7 @@ func New(opts ...Option) *Capitan {
 		bufferSize:   16, // default buffer size
 		emitCounts:   make(map[Signal]uint64),
 		fieldSchemas: make(map[Signal][]Key),
+		config:       Config{Signals: make(map[string]SignalConfig)},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -86,9 +90,16 @@ func Hook(signal Signal, callback EventCallback) *Listener {
 
 // Hook registers a callback for the given signal.
 // Returns a Listener that can be closed to unregister.
+// Returns nil if MaxListeners is configured and the limit is reached.
 func (c *Capitan) Hook(signal Signal, callback EventCallback) *Listener {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Check MaxListeners limit
+	cfg := c.resolveConfig(signal)
+	if cfg.MaxListeners > 0 && len(c.registry[signal]) >= cfg.MaxListeners {
+		return nil
+	}
 
 	listener := &Listener{
 		signal:   signal,

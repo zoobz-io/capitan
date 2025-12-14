@@ -214,8 +214,14 @@ func TestEmitAfterListenerCloseFullBuffer(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(1)
 
+	var received int32
+	var first sync.Once
+
 	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
-		wg.Done()
+		atomic.AddInt32(&received, 1)
+		first.Do(func() {
+			wg.Done()
+		})
 		<-block // Block until we release
 	})
 
@@ -227,13 +233,21 @@ func TestEmitAfterListenerCloseFullBuffer(t *testing.T) {
 	c.Emit(context.Background(), sig, key.Field(3)) // Buffer slot 2
 	time.Sleep(10 * time.Millisecond)
 
-	// Close listener (buffer still full, worker will exit)
+	// Unblock the handler so Close() can drain
+	close(block)
+
+	// Close listener - will drain all 3 events
 	listener.Close()
 
-	// This should NOT block (previously would without worker.done check)
+	// All 3 events should have been processed
+	if atomic.LoadInt32(&received) != 3 {
+		t.Errorf("expected 3 events drained, got %d", received)
+	}
+
+	// This should NOT block - worker is gone after close
 	done := make(chan struct{})
 	go func() {
-		c.Emit(context.Background(), sig, key.Field(4)) // Should detect worker.done and drop
+		c.Emit(context.Background(), sig, key.Field(4)) // Should be dropped (no listeners)
 		close(done)
 	}()
 
@@ -241,10 +255,8 @@ func TestEmitAfterListenerCloseFullBuffer(t *testing.T) {
 	case <-done:
 		// Success - emit didn't block
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("Emit blocked after listener close with full buffer")
+		t.Fatal("Emit blocked after listener close")
 	}
-
-	close(block) // Unblock worker
 }
 
 // TestConcurrentEmitAndListenerClose tests the TOCTOU race between
@@ -520,4 +532,244 @@ func TestModuleLevelHookOnce(t *testing.T) {
 	if count != 1 {
 		t.Errorf("expected 1, got %d", count)
 	}
+}
+
+// TestListenerCloseDrainsEvents verifies that Close() blocks until
+// all events queued before the close have been processed.
+func TestListenerCloseDrainsEvents(t *testing.T) {
+	c := New(WithBufferSize(16))
+
+	sig := NewSignal("test.drain", "Test drain signal")
+	key := NewIntKey("value")
+
+	var received []int
+	var mu sync.Mutex
+
+	listener := c.Hook(sig, func(_ context.Context, e *Event) {
+		v, _ := key.From(e)
+		mu.Lock()
+		received = append(received, v)
+		mu.Unlock()
+	})
+
+	// Emit multiple events
+	for i := 1; i <= 5; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	// Close should block until all 5 events are processed
+	listener.Close()
+
+	mu.Lock()
+	count := len(received)
+	mu.Unlock()
+
+	if count != 5 {
+		t.Errorf("expected 5 events processed before Close returned, got %d", count)
+	}
+}
+
+// TestListenerCloseDrainsWithSlowHandler verifies drain works with slow handlers.
+func TestListenerCloseDrainsWithSlowHandler(t *testing.T) {
+	c := New(WithBufferSize(16))
+
+	sig := NewSignal("test.drain.slow", "Test drain slow signal")
+	key := NewIntKey("value")
+
+	var count int32
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		time.Sleep(10 * time.Millisecond) // Slow handler
+		atomic.AddInt32(&count, 1)
+	})
+
+	// Emit events
+	for i := 0; i < 3; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	// Close should wait for all slow handlers to complete
+	listener.Close()
+
+	if atomic.LoadInt32(&count) != 3 {
+		t.Errorf("expected 3 events processed, got %d", count)
+	}
+}
+
+// TestListenerCloseNoEventsEmitted verifies Close() works when no events were emitted.
+func TestListenerCloseNoEventsEmitted(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.drain.noemit", "Test drain no emit signal")
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		t.Error("callback should not be invoked")
+	})
+
+	// Close without any emissions - should not block or panic
+	done := make(chan struct{})
+	go func() {
+		listener.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Close blocked with no events")
+	}
+}
+
+// TestListenerCloseDrainsSyncMode verifies Close() works correctly in sync mode.
+func TestListenerCloseDrainsSyncMode(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.drain.sync", "Test drain sync signal")
+	key := NewIntKey("value")
+
+	var count int
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		count++
+	})
+
+	// In sync mode, events are processed immediately
+	c.Emit(context.Background(), sig, key.Field(1))
+	c.Emit(context.Background(), sig, key.Field(2))
+
+	// Close should return immediately (no async queue to drain)
+	listener.Close()
+
+	if count != 2 {
+		t.Errorf("expected 2 events, got %d", count)
+	}
+}
+
+// TestListenerCloseMultipleListenersSameSignal verifies drain works
+// when multiple listeners are registered to the same signal.
+func TestListenerCloseMultipleListenersSameSignal(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.drain.multi", "Test drain multi signal")
+	key := NewIntKey("value")
+
+	var count1, count2 int32
+
+	listener1 := c.Hook(sig, func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count1, 1)
+	})
+
+	listener2 := c.Hook(sig, func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count2, 1)
+	})
+
+	// Emit events
+	for i := 0; i < 5; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	// Close first listener - should drain its events
+	listener1.Close()
+
+	// First listener should have received all 5
+	if atomic.LoadInt32(&count1) != 5 {
+		t.Errorf("listener1 expected 5 events, got %d", count1)
+	}
+
+	// Emit more events - only listener2 should receive
+	for i := 5; i < 8; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	listener2.Close()
+
+	// Second listener should have received all 8
+	if atomic.LoadInt32(&count2) != 8 {
+		t.Errorf("listener2 expected 8 events, got %d", count2)
+	}
+}
+
+// TestListenerCloseDuringShutdown verifies Close() handles concurrent shutdown.
+func TestListenerCloseDuringShutdown(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		c := New(WithBufferSize(16))
+
+		sig := NewSignal("test.drain.shutdown", "Test drain shutdown signal")
+		key := NewIntKey("value")
+
+		listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+			time.Sleep(time.Microsecond)
+		})
+
+		// Emit events
+		for j := 0; j < 10; j++ {
+			c.Emit(context.Background(), sig, key.Field(j))
+		}
+
+		// Race: Close and Shutdown concurrently
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			listener.Close()
+		}()
+
+		go func() {
+			defer wg.Done()
+			c.Shutdown()
+		}()
+
+		// Should complete without deadlock
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: deadlock detected", i)
+		}
+	}
+}
+
+// TestObserverCloseDrainsEvents verifies Observer.Close() also drains.
+func TestObserverCloseDrainsEvents(t *testing.T) {
+	c := New(WithBufferSize(16))
+
+	sig1 := NewSignal("test.observer.drain1", "Test observer drain signal 1")
+	sig2 := NewSignal("test.observer.drain2", "Test observer drain signal 2")
+	key := NewIntKey("value")
+
+	// Create hooks so signals exist
+	c.Hook(sig1, func(_ context.Context, _ *Event) {})
+	c.Hook(sig2, func(_ context.Context, _ *Event) {})
+
+	var count int32
+
+	observer := c.Observe(func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count, 1)
+	})
+
+	// Emit to both signals
+	for i := 0; i < 3; i++ {
+		c.Emit(context.Background(), sig1, key.Field(i))
+		c.Emit(context.Background(), sig2, key.Field(i))
+	}
+
+	// Close should drain events from all signals
+	observer.Close()
+
+	if atomic.LoadInt32(&count) != 6 {
+		t.Errorf("expected 6 events, got %d", count)
+	}
+
+	c.Shutdown()
 }

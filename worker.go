@@ -2,6 +2,7 @@ package capitan
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -70,7 +71,6 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 	// Track emit count and field schema
 	c.mu.Lock()
 	c.emitCounts[signal]++
-	// Capture field schema on first emit
 	if _, exists := c.fieldSchemas[signal]; !exists && len(fields) > 0 {
 		keys := make([]Key, len(fields))
 		for i, field := range fields {
@@ -84,7 +84,16 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 	if c.syncMode {
 		c.mu.RLock()
 		listeners := c.registry[signal]
+		cfg := c.resolveConfig(signal)
 		c.mu.RUnlock()
+
+		// Check disabled
+		if cfg.Disabled {
+			c.mu.Lock()
+			c.droppedEvents++
+			c.mu.Unlock()
+			return
+		}
 
 		// If no listeners, attach observers
 		if len(listeners) == 0 {
@@ -99,13 +108,13 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 
 		// Create and process event synchronously
 		event := newEvent(ctx, signal, severity, timestamp, fields...)
-		c.processEvent(signal, event)
+		c.processEventWithConfig(signal, event, cfg)
 		return
 	}
 
 	// Fast path: check if worker already exists (read lock)
 	c.mu.RLock()
-	_, exists := c.workers[signal]
+	worker, exists := c.workers[signal]
 	c.mu.RUnlock()
 
 	if !exists {
@@ -113,21 +122,16 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 		c.mu.Lock()
 
 		// Double-check: another goroutine may have created it
-		_, exists = c.workers[signal]
+		worker, exists = c.workers[signal]
 		if !exists {
 			// Check if listeners exist before creating worker
 			if len(c.registry[signal]) == 0 {
-				// Check if this is a new signal for observers
 				_, registryExists := c.registry[signal]
 				if !registryExists {
-					// Initialize registry entry for this signal
 					c.registry[signal] = nil
-
-					// Attach to all active observers
 					c.attachObservers(signal)
 				}
 
-				// If still no listeners after observer attachment, drop event
 				if len(c.registry[signal]) == 0 {
 					c.droppedEvents++
 					c.mu.Unlock()
@@ -135,24 +139,52 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 				}
 			}
 
-			// Check if shutdown in progress before creating worker
+			// Check if shutdown in progress
 			select {
 			case <-c.shutdown:
-				// Shutdown initiated, don't create new workers
 				c.mu.Unlock()
 				return
 			default:
-				// Proceed with worker creation
 			}
 
-			// Create worker only if listeners exist
-			newWorker := &workerState{
-				events: make(chan *Event, c.bufferSize),
-				done:   make(chan struct{}),
+			// Resolve config once for this worker
+			cfg := c.resolveConfig(signal)
+
+			// Don't create worker for disabled signals
+			if cfg.Disabled {
+				c.droppedEvents++
+				c.mu.Unlock()
+				return
 			}
-			c.workers[signal] = newWorker
+
+			// Determine buffer size
+			bufSize := c.bufferSize
+			if cfg.BufferSize > 0 {
+				bufSize = cfg.BufferSize
+			}
+
+			// Initialize rate limiter with burst capacity
+			rl := rateLimiter{}
+			if cfg.RateLimit > 0 {
+				burst := cfg.BurstSize
+				if burst <= 0 {
+					burst = 1
+				}
+				rl.tokens = float64(burst)
+				rl.lastCheck = nanotime()
+			}
+
+			// Create worker with config baked in
+			worker = &workerState{
+				events:      make(chan *Event, bufSize),
+				done:        make(chan struct{}),
+				markers:     make(chan chan struct{}),
+				config:      cfg,
+				rateLimiter: rl,
+			}
+			c.workers[signal] = worker
 			c.wg.Add(1)
-			go c.processEvents(signal, newWorker)
+			go c.processEvents(signal, worker)
 		}
 
 		c.mu.Unlock()
@@ -161,30 +193,30 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 	// Create event from pool
 	event := newEvent(ctx, signal, severity, timestamp, fields...)
 
-	// Capture worker reference atomically to avoid TOCTOU race
-	c.mu.RLock()
-	worker, workerExists := c.workers[signal]
-	c.mu.RUnlock()
-
-	if !workerExists {
-		// Worker closed between initial check and now (no listeners)
-		eventPool.Put(event)
-		return
-	}
-
-	// Send to events channel (never closed, so no panic risk)
-	select {
-	case worker.events <- event:
-		// Event queued successfully
-	case <-ctx.Done():
-		// Context canceled while waiting to queue
-		eventPool.Put(event)
-	case <-worker.done:
-		// Worker shutting down, drop event
-		eventPool.Put(event)
-	case <-c.shutdown:
-		// Global shutdown fired while waiting to send
-		eventPool.Put(event)
+	// Send to events channel based on worker's drop policy
+	if worker.config.DropPolicy == DropPolicyDropNewest {
+		// Non-blocking send - drop if buffer full
+		select {
+		case worker.events <- event:
+			// Queued
+		default:
+			eventPool.Put(event)
+			c.mu.Lock()
+			c.droppedEvents++
+			c.mu.Unlock()
+		}
+	} else {
+		// Blocking send (default)
+		select {
+		case worker.events <- event:
+			// Queued
+		case <-ctx.Done():
+			eventPool.Put(event)
+		case <-worker.done:
+			eventPool.Put(event)
+		case <-c.shutdown:
+			eventPool.Put(event)
+		}
 	}
 }
 
@@ -192,9 +224,24 @@ func (c *Capitan) emitWithSeverity(ctx context.Context, signal Signal, severity 
 // Handles panic recovery and returns pooled events to pool.
 // Skips processing if the event's context has been canceled.
 func (c *Capitan) processEvent(signal Signal, event *Event) {
+	c.processEventWithConfig(signal, event, SignalConfig{})
+}
+
+// processEventWithConfig processes an event with explicit config (used for sync mode).
+func (c *Capitan) processEventWithConfig(signal Signal, event *Event, cfg SignalConfig) {
 	// Check if context was canceled while event was queued
 	if event.ctx.Err() != nil {
-		// Skip canceled events, return pooled events to pool
+		if !event.replay {
+			eventPool.Put(event)
+		}
+		return
+	}
+
+	// Check minimum severity filter
+	if cfg.MinSeverity != "" && !severityAtLeast(event.severity, cfg.MinSeverity) {
+		c.mu.Lock()
+		c.droppedEvents++
+		c.mu.Unlock()
 		if !event.replay {
 			eventPool.Put(event)
 		}
@@ -225,16 +272,100 @@ func (c *Capitan) processEvent(signal Signal, event *Event) {
 	}
 }
 
-// drainEvents processes all remaining events in the queue then returns.
-func (c *Capitan) drainEvents(signal Signal, events chan *Event) {
+// drainEventsWithState processes all remaining events in the queue then returns.
+func (c *Capitan) drainEventsWithState(signal Signal, state *workerState) {
 	for {
 		select {
-		case event := <-events:
-			c.processEvent(signal, event)
+		case event := <-state.events:
+			c.processWorkerEvent(signal, state, event)
 		default:
 			return
 		}
 	}
+}
+
+// processWorkerEvent processes an event using the worker's config.
+func (c *Capitan) processWorkerEvent(signal Signal, state *workerState, event *Event) {
+	// Check if context was canceled
+	if event.ctx.Err() != nil {
+		if !event.replay {
+			eventPool.Put(event)
+		}
+		return
+	}
+
+	// Check minimum severity filter
+	if state.config.MinSeverity != "" && !severityAtLeast(event.severity, state.config.MinSeverity) {
+		c.mu.Lock()
+		c.droppedEvents++
+		c.mu.Unlock()
+		if !event.replay {
+			eventPool.Put(event)
+		}
+		return
+	}
+
+	// Check rate limit
+	if state.config.RateLimit > 0 {
+		if !c.checkWorkerRateLimit(state) {
+			c.mu.Lock()
+			c.droppedEvents++
+			c.mu.Unlock()
+			if !event.replay {
+				eventPool.Put(event)
+			}
+			return
+		}
+	}
+
+	// Copy listener slice while holding lock
+	c.mu.RLock()
+	listeners := make([]*Listener, len(c.registry[signal]))
+	copy(listeners, c.registry[signal])
+	c.mu.RUnlock()
+
+	// Invoke all listeners with panic recovery
+	for _, listener := range listeners {
+		func() {
+			defer func() {
+				if r := recover(); r != nil && c.panicHandler != nil {
+					c.panicHandler(signal, r)
+				}
+			}()
+			listener.callback(event.ctx, event)
+		}()
+	}
+
+	if !event.replay {
+		eventPool.Put(event)
+	}
+}
+
+// checkWorkerRateLimit checks if an event is allowed under the worker's rate limit.
+// Uses token bucket algorithm. Returns true if allowed.
+func (*Capitan) checkWorkerRateLimit(state *workerState) bool {
+	now := nanotime()
+	rl := &state.rateLimiter
+
+	// Calculate elapsed time and add tokens
+	elapsed := float64(now-rl.lastCheck) / 1e9 // seconds
+	rl.lastCheck = now
+
+	burst := state.config.BurstSize
+	if burst <= 0 {
+		burst = 1
+	}
+
+	rl.tokens += elapsed * state.config.RateLimit
+	if rl.tokens > float64(burst) {
+		rl.tokens = float64(burst)
+	}
+
+	if rl.tokens >= 1 {
+		rl.tokens--
+		return true
+	}
+	return false
 }
 
 // processEvents is the worker goroutine for a specific signal.
@@ -243,24 +374,30 @@ func (c *Capitan) processEvents(signal Signal, state *workerState) {
 	defer c.wg.Done()
 	defer func() {
 		// Clean up worker state when exiting
+		// Only delete if we're still the current worker (prevents old worker
+		// from deleting new worker during config-triggered rebuild)
 		c.mu.Lock()
-		delete(c.workers, signal)
+		if c.workers[signal] == state {
+			delete(c.workers, signal)
+		}
 		c.mu.Unlock()
 	}()
 
 	for {
 		select {
 		case event := <-state.events:
-			c.processEvent(signal, event)
+			c.processWorkerEvent(signal, state, event)
+
+		case marker := <-state.markers:
+			c.drainEventsWithState(signal, state)
+			close(marker)
 
 		case <-state.done:
-			// Per-worker shutdown: drain remaining events then exit
-			c.drainEvents(signal, state.events)
+			c.drainEventsWithState(signal, state)
 			return
 
 		case <-c.shutdown:
-			// Global shutdown: drain remaining events then exit
-			c.drainEvents(signal, state.events)
+			c.drainEventsWithState(signal, state)
 			return
 		}
 	}
@@ -276,4 +413,71 @@ func (c *Capitan) Shutdown() {
 		c.mu.Unlock()
 	})
 	c.wg.Wait()
+}
+
+// IsShutdown reports whether Shutdown has been called on this instance.
+func (c *Capitan) IsShutdown() bool {
+	select {
+	case <-c.shutdown:
+		return true
+	default:
+		return false
+	}
+}
+
+// Drain blocks until all currently queued events have been processed.
+// Unlike Shutdown, workers remain active after draining.
+// Returns an error if the context is canceled before drain completes.
+func (c *Capitan) Drain(ctx context.Context) error {
+	// Snapshot current workers
+	c.mu.RLock()
+	workers := make(map[Signal]*workerState, len(c.workers))
+	for sig, w := range c.workers {
+		workers[sig] = w
+	}
+	c.mu.RUnlock()
+
+	if len(workers) == 0 {
+		return nil
+	}
+
+	// Inject markers into all workers concurrently
+	var wg sync.WaitGroup
+
+	for _, worker := range workers {
+		wg.Add(1)
+		go func(w *workerState) {
+			defer wg.Done()
+			marker := make(chan struct{})
+			select {
+			case w.markers <- marker:
+				select {
+				case <-marker:
+					// Drained successfully
+				case <-ctx.Done():
+					// Context canceled while waiting for drain
+				}
+			case <-w.done:
+				// Worker already shutting down
+			case <-c.shutdown:
+				// Global shutdown
+			case <-ctx.Done():
+				// Context canceled
+			}
+		}(worker)
+	}
+
+	// Wait for all markers with context
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
