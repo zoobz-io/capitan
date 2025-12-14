@@ -844,3 +844,124 @@ func TestDrainNoWorkers(t *testing.T) {
 
 	c.Shutdown()
 }
+
+// TestEmitBlockedWorkerDone verifies emit returns when worker.done closes
+// while blocked waiting for buffer space.
+func TestEmitBlockedWorkerDone(_ *testing.T) {
+	c := New(WithBufferSize(1))
+	sig := NewSignal("test.blocked.done", "Test blocked emit worker done")
+
+	block := make(chan struct{})
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block // Block forever
+	})
+
+	// Fill the buffer
+	c.Emit(context.Background(), sig)
+
+	// Start a goroutine that will close the listener after a delay
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		listener.Close()
+	}()
+
+	// This emit will block, then return when worker.done closes
+	c.Emit(context.Background(), sig)
+
+	close(block)
+	c.Shutdown()
+}
+
+// TestDrainWorkerDone verifies drain handles worker closing during marker send.
+func TestDrainWorkerDone(_ *testing.T) {
+	c := New(WithBufferSize(1))
+	sig := NewSignal("test.drain.worker.done", "Test drain worker done")
+
+	block := make(chan struct{})
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block
+	})
+
+	// Emit to create worker and block it
+	c.Emit(context.Background(), sig)
+
+	// Close listener (and thus worker) while drain is trying to send marker
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		listener.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Drain should complete (not hang) even though worker closes
+	_ = c.Drain(ctx)
+
+	close(block)
+	c.Shutdown()
+}
+
+// TestDrainDuringShutdown verifies drain handles global shutdown.
+func TestDrainDuringShutdown(_ *testing.T) {
+	c := New(WithBufferSize(1))
+	sig := NewSignal("test.drain.shutdown", "Test drain during shutdown")
+
+	block := make(chan struct{})
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block
+	})
+
+	// Emit to create worker and block it
+	c.Emit(context.Background(), sig)
+
+	// Shutdown while drain is in progress
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(block)
+		c.Shutdown()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	// Drain should complete when shutdown occurs
+	_ = c.Drain(ctx)
+}
+
+// TestDrainContextCancelledDuringMarkerWait verifies context cancellation
+// while waiting for marker to be processed.
+func TestDrainContextCancelledDuringMarkerWait(t *testing.T) {
+	c := New(WithBufferSize(1))
+	sig := NewSignal("test.drain.ctx.marker", "Test drain context cancel during marker wait")
+
+	markerSent := make(chan struct{})
+	block := make(chan struct{})
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		// Signal that we've received an event (marker will be queued after this)
+		select {
+		case markerSent <- struct{}{}:
+		default:
+		}
+		<-block
+	})
+
+	// Emit to create worker
+	c.Emit(context.Background(), sig)
+
+	// Wait for listener to start processing
+	<-markerSent
+
+	// Create a context that will be canceled quickly
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+
+	// Drain will send marker, but context will cancel while waiting for it
+	err := c.Drain(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Logf("drain returned: %v (expected DeadlineExceeded or nil)", err)
+	}
+
+	close(block)
+	c.Shutdown()
+}

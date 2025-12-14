@@ -740,6 +740,58 @@ func TestListenerCloseDuringShutdown(t *testing.T) {
 	}
 }
 
+// TestListenerCloseWorkerDone verifies Close handles worker.done closing
+// while trying to send a marker.
+func TestListenerCloseWorkerDone(t *testing.T) {
+	c := New(WithBufferSize(1))
+	sig := NewSignal("test.listener.close.workerdone", "Test listener close worker done")
+
+	block := make(chan struct{})
+
+	// Two listeners - we need both for the race
+	listener1 := c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block
+	})
+	listener2 := c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block
+	})
+
+	// Emit to create worker and block it
+	c.Emit(context.Background(), sig)
+
+	// Race: both listeners try to close concurrently
+	// One will succeed, the other will hit worker.done
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		listener1.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		listener2.Close()
+	}()
+
+	// Unblock the worker
+	close(block)
+
+	// Wait for both closes to complete
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(time.Second):
+		t.Fatal("deadlock in listener close")
+	}
+
+	c.Shutdown()
+}
+
 // TestObserverCloseDrainsEvents verifies Observer.Close() also drains.
 func TestObserverCloseDrainsEvents(t *testing.T) {
 	c := New(WithBufferSize(16))
