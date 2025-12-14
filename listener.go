@@ -47,6 +47,43 @@ func (l *Listener) Close() {
 	c.unregister(l)
 }
 
+// Drain blocks until all events queued before Drain was called have been processed.
+// Unlike Close, the listener remains active after draining.
+// Returns an error if the context is canceled before drain completes.
+func (l *Listener) Drain(ctx context.Context) error {
+	c := l.capitan
+
+	// Sync mode has no queue to drain
+	if c.syncMode {
+		return nil
+	}
+
+	c.mu.RLock()
+	worker, exists := c.workers[l.signal]
+	c.mu.RUnlock()
+
+	if !exists {
+		return nil
+	}
+
+	marker := make(chan struct{})
+	select {
+	case worker.markers <- marker:
+		select {
+		case <-marker:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	case <-worker.done:
+		return nil
+	case <-c.shutdown:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // HookOnce registers a callback that fires only once, then automatically unregisters.
 // Returns a Listener that can be closed early to prevent the callback from firing.
 //

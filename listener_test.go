@@ -2,6 +2,7 @@ package capitan
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -790,6 +791,757 @@ func TestListenerCloseWorkerDone(t *testing.T) {
 	}
 
 	c.Shutdown()
+}
+
+// TestListenerDrain verifies Listener.Drain() blocks until queued events are processed.
+func TestListenerDrain(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.listener.drain", "Test listener drain signal")
+	key := NewIntKey("value")
+
+	var count int32
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		time.Sleep(5 * time.Millisecond) // Slow handler
+		atomic.AddInt32(&count, 1)
+	})
+
+	// Emit events
+	for i := 0; i < 5; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	// Drain should block until all events processed
+	err := listener.Drain(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if atomic.LoadInt32(&count) != 5 {
+		t.Errorf("expected 5 events processed, got %d", count)
+	}
+
+	// Listener should still be active after drain
+	c.Emit(context.Background(), sig, key.Field(99))
+	err = listener.Drain(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error on second drain: %v", err)
+	}
+
+	if atomic.LoadInt32(&count) != 6 {
+		t.Errorf("expected 6 events after second emit, got %d", count)
+	}
+}
+
+// TestListenerDrainContextCancellation verifies Drain respects context cancellation.
+func TestListenerDrainContextCancellation(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.listener.drain.cancel", "Test listener drain cancel signal")
+	key := NewIntKey("value")
+
+	block := make(chan struct{})
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block // Block forever
+	})
+
+	// Emit event to block the worker
+	c.Emit(context.Background(), sig, key.Field(1))
+
+	// Try to drain with already-canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := listener.Drain(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+
+	close(block)
+}
+
+// TestListenerDrainContextCancellationWhileWaiting verifies Drain returns when context is canceled while waiting for marker.
+func TestListenerDrainContextCancellationWhileWaiting(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.listener.drain.cancel.waiting", "Test listener drain cancel waiting signal")
+	key := NewIntKey("value")
+
+	block := make(chan struct{})
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block // Block until released
+	})
+
+	// Emit event to start blocking
+	c.Emit(context.Background(), sig, key.Field(1))
+	time.Sleep(10 * time.Millisecond) // Ensure event is being processed
+
+	// Start drain in goroutine
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- listener.Drain(ctx)
+	}()
+
+	// Cancel while drain is waiting
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drain did not return after context cancellation")
+	}
+
+	close(block)
+}
+
+// TestListenerDrainSyncMode verifies Drain is a no-op in sync mode.
+func TestListenerDrainSyncMode(t *testing.T) {
+	c := New(WithSyncMode())
+	defer c.Shutdown()
+
+	sig := NewSignal("test.listener.drain.sync", "Test listener drain sync signal")
+	key := NewIntKey("value")
+
+	var count int
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		count++
+	})
+
+	c.Emit(context.Background(), sig, key.Field(1))
+
+	// Drain should return immediately in sync mode
+	err := listener.Drain(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if count != 1 {
+		t.Errorf("expected 1 event, got %d", count)
+	}
+}
+
+// TestListenerDrainNoWorker verifies Drain returns immediately when no worker exists.
+func TestListenerDrainNoWorker(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.listener.drain.noworker", "Test listener drain no worker signal")
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	// No events emitted, so no worker exists
+	done := make(chan struct{})
+	go func() {
+		err := listener.Drain(context.Background())
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success - returned immediately
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("drain blocked with no worker")
+	}
+}
+
+// TestListenerDrainWorkerDone verifies Drain handles worker.done closing.
+func TestListenerDrainWorkerDone(t *testing.T) {
+	c := New(WithBufferSize(1))
+
+	sig := NewSignal("test.listener.drain.workerdone", "Test listener drain worker done signal")
+	key := NewIntKey("value")
+
+	block := make(chan struct{})
+
+	listener1 := c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block
+	})
+	listener2 := c.Hook(sig, func(_ context.Context, _ *Event) {
+		<-block
+	})
+
+	// Emit to create worker
+	c.Emit(context.Background(), sig, key.Field(1))
+
+	// Close listener1, which will drain and then close the worker when listener2 also closes
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		listener1.Close()
+	}()
+
+	go func() {
+		defer wg.Done()
+		// Give listener1 time to start closing
+		time.Sleep(10 * time.Millisecond)
+		// This should handle the worker being done
+		listener2.Drain(context.Background())
+		listener2.Close()
+	}()
+
+	// Unblock handlers
+	close(block)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(time.Second):
+		t.Fatal("deadlock detected")
+	}
+
+	c.Shutdown()
+}
+
+// TestListenerDrainDuringShutdown verifies Drain handles global shutdown.
+func TestListenerDrainDuringShutdown(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		c := New(WithBufferSize(16))
+
+		sig := NewSignal("test.listener.drain.shutdown", "Test listener drain shutdown signal")
+		key := NewIntKey("value")
+
+		listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+			time.Sleep(time.Millisecond)
+		})
+
+		// Emit events
+		for j := 0; j < 5; j++ {
+			c.Emit(context.Background(), sig, key.Field(j))
+		}
+
+		// Race: Drain and Shutdown concurrently
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			listener.Drain(context.Background())
+		}()
+
+		go func() {
+			defer wg.Done()
+			time.Sleep(5 * time.Millisecond)
+			c.Shutdown()
+		}()
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: deadlock detected", i)
+		}
+	}
+}
+
+// TestListenerDrainConcurrent verifies multiple concurrent Drain calls work correctly.
+func TestListenerDrainConcurrent(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.listener.drain.concurrent", "Test listener drain concurrent signal")
+	key := NewIntKey("value")
+
+	var count int32
+
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count, 1)
+	})
+
+	// Emit events
+	for i := 0; i < 10; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	// Multiple concurrent drains
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			listener.Drain(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	if atomic.LoadInt32(&count) != 10 {
+		t.Errorf("expected 10 events, got %d", count)
+	}
+}
+
+// TestObserverDrain verifies Observer.Drain() blocks until all queued events are processed.
+func TestObserverDrain(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig1 := NewSignal("test.observer.drain.one", "Test observer drain signal 1")
+	sig2 := NewSignal("test.observer.drain.two", "Test observer drain signal 2")
+	key := NewIntKey("value")
+
+	// Create hooks so signals exist
+	c.Hook(sig1, func(_ context.Context, _ *Event) {})
+	c.Hook(sig2, func(_ context.Context, _ *Event) {})
+
+	var count int32
+
+	observer := c.Observe(func(_ context.Context, _ *Event) {
+		time.Sleep(5 * time.Millisecond)
+		atomic.AddInt32(&count, 1)
+	})
+
+	// Emit to both signals
+	for i := 0; i < 3; i++ {
+		c.Emit(context.Background(), sig1, key.Field(i))
+		c.Emit(context.Background(), sig2, key.Field(i))
+	}
+
+	// Drain should block until all events processed
+	err := observer.Drain(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if atomic.LoadInt32(&count) != 6 {
+		t.Errorf("expected 6 events, got %d", count)
+	}
+
+	// Observer should still be active after drain
+	c.Emit(context.Background(), sig1, key.Field(99))
+	err = observer.Drain(context.Background())
+	if err != nil {
+		t.Errorf("unexpected error on second drain: %v", err)
+	}
+
+	if atomic.LoadInt32(&count) != 7 {
+		t.Errorf("expected 7 events after second emit, got %d", count)
+	}
+}
+
+// TestObserverDrainContextCancellation verifies Observer.Drain respects context cancellation.
+func TestObserverDrainContextCancellation(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.observer.drain.cancel", "Test observer drain cancel signal")
+	key := NewIntKey("value")
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	block := make(chan struct{})
+
+	observer := c.Observe(func(_ context.Context, _ *Event) {
+		<-block
+	})
+
+	// Emit event to block
+	c.Emit(context.Background(), sig, key.Field(1))
+
+	// Try to drain with canceled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := observer.Drain(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got %v", err)
+	}
+
+	close(block)
+}
+
+// TestObserverDrainInactive verifies Drain returns immediately for closed observer.
+func TestObserverDrainInactive(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.observer.drain.inactive", "Test observer drain inactive signal")
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	observer := c.Observe(func(_ context.Context, _ *Event) {})
+
+	// Close the observer
+	observer.Close()
+
+	// Drain should return immediately
+	done := make(chan struct{})
+	go func() {
+		err := observer.Drain(context.Background())
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("drain blocked on inactive observer")
+	}
+}
+
+// TestObserverDrainNoListeners verifies Drain returns immediately when observer has no listeners.
+func TestObserverDrainNoListeners(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	// Create observer before any signals exist (no listeners yet)
+	observer := c.Observe(func(_ context.Context, _ *Event) {})
+
+	// Drain should return immediately
+	done := make(chan struct{})
+	go func() {
+		err := observer.Drain(context.Background())
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("drain blocked with no listeners")
+	}
+}
+
+// TestObserverDrainPropagatesListenerError verifies Observer.Drain returns listener errors.
+func TestObserverDrainPropagatesListenerError(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.observer.drain.error", "Test observer drain error signal")
+	key := NewIntKey("value")
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	block := make(chan struct{})
+
+	observer := c.Observe(func(_ context.Context, _ *Event) {
+		<-block // Block until released
+	})
+
+	// Emit event to start blocking
+	c.Emit(context.Background(), sig, key.Field(1))
+	time.Sleep(10 * time.Millisecond) // Ensure event is being processed
+
+	// Start drain with context that will be canceled while waiting
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- observer.Drain(ctx)
+	}()
+
+	// Give time for drain to start waiting
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		// Either context.Canceled from outer select or from listener propagation
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("drain did not return after context cancellation")
+	}
+
+	close(block)
+}
+
+// TestObserverDrainReturnsListenerErrorAfterCompletion tests the errCh read path.
+// This requires listener drains to complete with errors and select to pick done.
+func TestObserverDrainReturnsListenerErrorAfterCompletion(t *testing.T) {
+	c := New(WithBufferSize(32))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.observer.drain.error.completion", "Test observer drain error completion signal")
+	key := NewIntKey("value")
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	observer := c.Observe(func(_ context.Context, _ *Event) {
+		time.Sleep(10 * time.Millisecond)
+	})
+
+	// Emit events
+	for j := 0; j < 3; j++ {
+		c.Emit(context.Background(), sig, key.Field(j))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+
+	err := observer.Drain(ctx)
+
+	// We expect context.DeadlineExceeded
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestListenerDrainWorkerDoneRace specifically tests the worker.done branch in Drain.
+func TestListenerDrainWorkerDoneRace(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		c := New(WithBufferSize(1))
+
+		sig := NewSignal("test.listener.drain.workerdone.race", "Test listener drain worker done race signal")
+		key := NewIntKey("value")
+
+		slowBlock := make(chan struct{})
+
+		// Single listener with slow handler
+		listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+			<-slowBlock
+		})
+
+		// Emit to create worker and start processing
+		c.Emit(context.Background(), sig, key.Field(1))
+
+		// Race: Shutdown and Drain concurrently
+		// Shutdown will close worker.done
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			c.Shutdown()
+		}()
+
+		go func() {
+			defer wg.Done()
+			// Small delay to increase chance of hitting worker.done case
+			time.Sleep(time.Microsecond * time.Duration(i%10))
+			listener.Drain(context.Background())
+		}()
+
+		// Unblock after a bit
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			close(slowBlock)
+		}()
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: deadlock detected", i)
+		}
+	}
+}
+
+// TestListenerDrainShutdownRace specifically tests the c.shutdown branch in Drain.
+func TestListenerDrainShutdownRace(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		c := New(WithBufferSize(16))
+
+		sig := NewSignal("test.listener.drain.shutdown.race", "Test listener drain shutdown race signal")
+		key := NewIntKey("value")
+
+		// Fill the markers channel so Drain has to wait
+		listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+			time.Sleep(20 * time.Millisecond)
+		})
+
+		// Emit multiple events to keep worker busy
+		for j := 0; j < 5; j++ {
+			c.Emit(context.Background(), sig, key.Field(j))
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		go func() {
+			defer wg.Done()
+			// Immediately shutdown
+			c.Shutdown()
+		}()
+
+		go func() {
+			defer wg.Done()
+			listener.Drain(context.Background())
+		}()
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: deadlock detected", i)
+		}
+	}
+}
+
+// TestListenerDrainContextCancelledWhileWaitingForMarker tests the inner ctx.Done branch.
+// This requires: marker sent successfully, but context canceled while draining remaining events.
+func TestListenerDrainContextCancelledWhileWaitingForMarker(t *testing.T) {
+	c := New(WithBufferSize(32))
+	defer c.Shutdown()
+
+	sig := NewSignal("test.listener.drain.ctx.inner", "Test listener drain ctx inner signal")
+	key := NewIntKey("value")
+
+	// Handler that takes 30ms per event
+	listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+		time.Sleep(30 * time.Millisecond)
+	})
+
+	// Emit 10 events - will take 300ms total to drain
+	for i := 0; i < 10; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	// Wait for first event to start processing
+	time.Sleep(5 * time.Millisecond)
+
+	// Drain with timeout:
+	// - After ~30ms: first event done, worker enters select, receives marker
+	// - Worker starts draining 9 remaining events (270ms)
+	// - After 100ms: context times out while draining
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := listener.Drain(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got %v", err)
+	}
+}
+
+// TestListenerDrainWorkerDoneViaConfigDisable tests the worker.done branch when
+// ApplyConfig disables a signal while Drain is waiting.
+func TestListenerDrainWorkerDoneViaConfigDisable(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		c := New(WithBufferSize(1))
+
+		sig := NewSignal("test.drain.config.disable", "Test drain config disable signal")
+		key := NewIntKey("value")
+
+		// Slow handler to keep worker busy
+		listener := c.Hook(sig, func(_ context.Context, _ *Event) {
+			time.Sleep(20 * time.Millisecond)
+		})
+
+		// Emit to create worker and keep it busy
+		c.Emit(context.Background(), sig, key.Field(1))
+
+		// Small delay to ensure worker is processing
+		time.Sleep(5 * time.Millisecond)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Goroutine 1: Drain (will block trying to send marker)
+		go func() {
+			defer wg.Done()
+			listener.Drain(context.Background())
+		}()
+
+		// Goroutine 2: Disable the signal via config (closes worker.done)
+		go func() {
+			defer wg.Done()
+			time.Sleep(10 * time.Millisecond)
+			c.ApplyConfig(Config{
+				Signals: map[string]SignalConfig{
+					sig.Name(): {Disabled: true},
+				},
+			})
+		}()
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Success
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: deadlock detected", i)
+		}
+
+		c.Shutdown()
+	}
+}
+
+// TestObserverDrainConcurrent verifies multiple concurrent Drain calls work correctly.
+func TestObserverDrainConcurrent(t *testing.T) {
+	c := New(WithBufferSize(16))
+	defer c.Shutdown()
+
+	sig1 := NewSignal("test.observer.drain.concurrent.one", "Test observer drain concurrent signal 1")
+	sig2 := NewSignal("test.observer.drain.concurrent.two", "Test observer drain concurrent signal 2")
+	key := NewIntKey("value")
+
+	c.Hook(sig1, func(_ context.Context, _ *Event) {})
+	c.Hook(sig2, func(_ context.Context, _ *Event) {})
+
+	var count int32
+
+	observer := c.Observe(func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count, 1)
+	})
+
+	// Emit events
+	for i := 0; i < 5; i++ {
+		c.Emit(context.Background(), sig1, key.Field(i))
+		c.Emit(context.Background(), sig2, key.Field(i))
+	}
+
+	// Multiple concurrent drains
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			observer.Drain(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	if atomic.LoadInt32(&count) != 10 {
+		t.Errorf("expected 10 events, got %d", count)
+	}
 }
 
 // TestObserverCloseDrainsEvents verifies Observer.Close() also drains.

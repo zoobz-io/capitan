@@ -1,6 +1,9 @@
 package capitan
 
-import "sync"
+import (
+	"context"
+	"sync"
+)
 
 // Observer represents a dynamic subscription that receives events from multiple signals.
 //
@@ -47,6 +50,57 @@ func (o *Observer) Close() {
 	// Close all listeners
 	for _, l := range listeners {
 		l.Close()
+	}
+}
+
+// Drain blocks until all events queued before Drain was called have been processed.
+// Unlike Close, the observer remains active after draining.
+// Returns an error if the context is canceled before drain completes.
+func (o *Observer) Drain(ctx context.Context) error {
+	o.mu.Lock()
+	if !o.active {
+		o.mu.Unlock()
+		return nil
+	}
+	listeners := make([]*Listener, len(o.listeners))
+	copy(listeners, o.listeners)
+	o.mu.Unlock()
+
+	if len(listeners) == 0 {
+		return nil
+	}
+
+	// Drain all listeners concurrently
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(listeners))
+
+	for _, l := range listeners {
+		wg.Add(1)
+		go func(listener *Listener) {
+			defer wg.Done()
+			if err := listener.Drain(ctx); err != nil {
+				errCh <- err
+			}
+		}(l)
+	}
+
+	// Wait for all drains with context
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		select {
+		case err := <-errCh:
+			return err
+		default:
+			return nil
+		}
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
