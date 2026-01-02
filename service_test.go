@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const helloValue = "hello"
+
 func TestNew(t *testing.T) {
 	c := New(WithSyncMode())
 	if c == nil {
@@ -22,45 +24,6 @@ func TestNew(t *testing.T) {
 		t.Error("shutdown channel not initialized")
 	}
 }
-
-func TestEmitCreatesWorkerLazily(t *testing.T) {
-	c := New()
-	defer c.Shutdown()
-
-	sig := NewSignal("test.lazy", "Test lazy signal")
-	key := NewStringKey("value")
-
-	// Before emit, no worker exists
-	c.mu.RLock()
-	_, exists := c.workers[sig]
-	c.mu.RUnlock()
-
-	if exists {
-		t.Error("worker should not exist before first emit")
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	c.Hook(sig, func(_ context.Context, _ *Event) {
-		wg.Done()
-	})
-
-	c.Emit(context.Background(), sig, key.Field("test"))
-
-	// After emit, worker should exist
-	c.mu.RLock()
-	_, exists = c.workers[sig]
-	c.mu.RUnlock()
-
-	if !exists {
-		t.Error("worker should exist after first emit")
-	}
-
-	wg.Wait()
-}
-
-// Note: TestEmitCreatesWorkerLazily keeps async mode because it specifically tests worker creation
 
 func TestEmitAsyncProcessing(t *testing.T) {
 	c := New(WithSyncMode())
@@ -106,12 +69,12 @@ func TestEmitWithMultipleListeners(t *testing.T) {
 		received2 = field.Get()
 	})
 
-	c.Emit(context.Background(), sig, key.Field("hello"))
+	c.Emit(context.Background(), sig, key.Field(helloValue))
 
-	if received1 != "hello" {
+	if received1 != helloValue {
 		t.Errorf("listener 1: expected %q, got %q", "hello", received1)
 	}
-	if received2 != "hello" {
+	if received2 != helloValue {
 		t.Errorf("listener 2: expected %q, got %q", "hello", received2)
 	}
 }

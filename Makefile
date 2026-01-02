@@ -1,7 +1,6 @@
-.PHONY: test bench lint coverage clean all help check ci
+.PHONY: test test-unit test-integration test-bench test-all bench lint lint-fix coverage clean all help check ci install-tools install-hooks
 
-# Default target
-all: test lint
+.DEFAULT_GOAL := help
 
 # Display help
 help:
@@ -9,7 +8,8 @@ help:
 	@echo "==========================="
 	@echo ""
 	@echo "Testing & Quality:"
-	@echo "  make test            - Run unit tests with race detector"
+	@echo "  make test            - Run all tests with race detector"
+	@echo "  make test-unit       - Run unit tests only (short mode)"
 	@echo "  make test-integration- Run integration tests"
 	@echo "  make test-bench      - Run performance benchmarks"
 	@echo "  make test-all        - Run all tests (unit + integration)"
@@ -20,15 +20,23 @@ help:
 	@echo "  make check           - Run tests and lint (quick check)"
 	@echo "  make ci              - Full CI simulation (all tests + lint + coverage)"
 	@echo ""
-	@echo "Other:"
+	@echo "Setup:"
 	@echo "  make install-tools   - Install required development tools"
+	@echo "  make install-hooks   - Install git hooks"
+	@echo ""
+	@echo "Other:"
 	@echo "  make clean           - Clean generated files"
-	@echo "  make all             - Run tests and lint (default)"
+	@echo "  make all             - Run tests and lint"
 
-# Run tests with race detector
+# Run all tests with race detector
 test:
-	@echo "Running tests..."
+	@echo "Running all tests..."
 	@go test -v -race ./...
+
+# Run unit tests only (short mode, excludes integration)
+test-unit:
+	@echo "Running unit tests..."
+	@go test -v -race -short $(go list ./... | grep -v '/testing/')
 
 # Run benchmarks
 bench:
@@ -66,6 +74,15 @@ install-tools:
 	@echo "Installing development tools..."
 	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 
+# Install git hooks
+install-hooks:
+	@echo "Installing git hooks..."
+	@mkdir -p .git/hooks
+	@echo '#!/bin/sh' > .git/hooks/pre-commit
+	@echo 'make check' >> .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "Pre-commit hook installed"
+
 # Quick check - run tests and lint
 check: test lint
 	@echo "All checks passed!"
@@ -87,3 +104,6 @@ test-all: test test-integration
 # CI simulation - what CI runs locally
 ci: clean lint test test-integration coverage
 	@echo "Full CI simulation complete!"
+
+# Run tests and lint
+all: test lint

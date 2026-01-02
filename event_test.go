@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const testValue = "test"
+
 func TestSignalNameAndDescription(t *testing.T) {
 	sig := NewSignal("test.signal", "Test signal description")
 
@@ -23,7 +25,7 @@ func TestEventGet(t *testing.T) {
 	strKey := NewStringKey("name")
 	intKey := NewIntKey("count")
 
-	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), strKey.Field("test"), intKey.Field(42))
+	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), strKey.Field(testValue), intKey.Field(42))
 
 	nameField := event.Get(strKey)
 	if nameField == nil {
@@ -34,8 +36,8 @@ func TestEventGet(t *testing.T) {
 	if !ok {
 		t.Fatal("name field wrong type")
 	}
-	if sf.Get() != "test" {
-		t.Errorf("expected %q, got %q", "test", sf.Get())
+	if sf.Get() != testValue {
+		t.Errorf("expected %q, got %q", testValue, sf.Get())
 	}
 
 	countField := event.Get(intKey)
@@ -57,7 +59,7 @@ func TestEventGetMissingKey(t *testing.T) {
 	strKey := NewStringKey("existing")
 	missingKey := NewStringKey("missing")
 
-	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), strKey.Field("test"))
+	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), strKey.Field(testValue))
 
 	field := event.Get(missingKey)
 	if field != nil {
@@ -72,7 +74,7 @@ func TestEventFields(t *testing.T) {
 	boolKey := NewBoolKey("active")
 
 	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(),
-		strKey.Field("test"),
+		strKey.Field(testValue),
 		intKey.Field(42),
 		boolKey.Field(true),
 	)
@@ -88,7 +90,7 @@ func TestEventFields(t *testing.T) {
 	for _, field := range fields {
 		switch f := field.(type) {
 		case GenericField[string]:
-			if f.Get() == "test" {
+			if f.Get() == testValue {
 				foundStr = true
 			}
 		case GenericField[int]:
@@ -117,7 +119,7 @@ func TestEventSignal(t *testing.T) {
 	sig := NewSignal("test.signal", "Test signal")
 	key := NewStringKey("value")
 
-	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field("test"))
+	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field(testValue))
 
 	if event.Signal() != sig {
 		t.Errorf("expected signal %q, got %q", sig, event.Signal())
@@ -129,7 +131,7 @@ func TestEventTimestamp(t *testing.T) {
 	key := NewStringKey("value")
 
 	before := time.Now()
-	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field("test"))
+	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field(testValue))
 	after := time.Now()
 
 	if event.Timestamp().Before(before) || event.Timestamp().After(after) {
@@ -168,7 +170,7 @@ func TestEventFieldsDefensiveCopy(t *testing.T) {
 	sig := NewSignal("test.defensive", "Test defensive copy signal")
 	key := NewStringKey("value")
 
-	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field("test"))
+	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field(testValue))
 
 	fields1 := event.Fields()
 	fields2 := event.Fields()
@@ -188,7 +190,7 @@ func TestEventContext(t *testing.T) {
 	expectedValue := "test_value"
 
 	ctx := context.WithValue(context.Background(), testKey, expectedValue)
-	event := newEvent(ctx, sig, SeverityInfo, time.Now(), key.Field("test"))
+	event := newEvent(ctx, sig, SeverityInfo, time.Now(), key.Field(testValue))
 
 	eventCtx := event.Context()
 	if eventCtx == nil {
@@ -205,7 +207,7 @@ func TestEventContextBackground(t *testing.T) {
 	sig := NewSignal("test.background", "Test background context signal")
 	key := NewStringKey("value")
 
-	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field("test"))
+	event := newEvent(context.Background(), sig, SeverityInfo, time.Now(), key.Field(testValue))
 
 	ctx := event.Context()
 	if ctx == nil {
@@ -233,7 +235,7 @@ func TestEventSeverity(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			event := newEvent(context.Background(), sig, tt.severity, time.Now(), key.Field("test"))
+			event := newEvent(context.Background(), sig, tt.severity, time.Now(), key.Field(testValue))
 			if event.Severity() != tt.severity {
 				t.Errorf("expected severity %q, got %q", tt.severity, event.Severity())
 			}
@@ -252,7 +254,7 @@ func TestEventDefaultSeverity(t *testing.T) {
 		receivedSeverity = e.Severity()
 	})
 
-	c.Emit(context.Background(), sig, key.Field("test"))
+	c.Emit(context.Background(), sig, key.Field(testValue))
 	c.Shutdown()
 
 	if receivedSeverity != SeverityInfo {
@@ -284,7 +286,7 @@ func TestSeverityMethods(t *testing.T) {
 				receivedSeverity = e.Severity()
 			})
 
-			tt.emitFunc(c, context.Background(), sig, key.Field("test"))
+			tt.emitFunc(c, context.Background(), sig, key.Field(testValue))
 			c.Shutdown()
 
 			if receivedSeverity != tt.expected {
@@ -339,7 +341,7 @@ func TestNewEventNotPooled(t *testing.T) {
 	key := NewStringKey("value")
 
 	// NewEvent should not be pooled - safe to hold reference
-	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+	e := NewEvent(sig, SeverityInfo, time.Now(), key.Field(testValue))
 
 	// Verify IsReplay is false initially (set to true by Replay)
 	if e.IsReplay() {
@@ -360,7 +362,7 @@ func TestIsReplay(t *testing.T) {
 		emittedEvent = e
 	})
 
-	c.Emit(context.Background(), sig, key.Field("test"))
+	c.Emit(context.Background(), sig, key.Field(testValue))
 
 	if emittedEvent == nil {
 		t.Fatal("event not received")
@@ -377,7 +379,7 @@ func TestEventClone(t *testing.T) {
 
 	timestamp := time.Date(2024, 1, 15, 10, 30, 0, 0, time.UTC)
 	original := newEvent(context.Background(), sig, SeverityWarn, timestamp,
-		strKey.Field("test"),
+		strKey.Field(testValue),
 		intKey.Field(42),
 	)
 
@@ -402,7 +404,7 @@ func TestEventClone(t *testing.T) {
 
 	// Verify field values
 	strVal, ok := strKey.From(clone)
-	if !ok || strVal != "test" {
+	if !ok || strVal != testValue {
 		t.Errorf("string field mismatch: expected 'test', got '%s'", strVal)
 	}
 	intVal, ok := intKey.From(clone)
@@ -440,7 +442,7 @@ func TestEventCloneReplay(t *testing.T) {
 	sig := NewSignal("test.clone.replay", "Test clone replay signal")
 	key := NewStringKey("value")
 
-	original := NewEvent(sig, SeverityInfo, time.Now(), key.Field("test"))
+	original := NewEvent(sig, SeverityInfo, time.Now(), key.Field(testValue))
 	original.replay = true
 
 	clone := original.Clone()

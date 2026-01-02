@@ -38,7 +38,7 @@ No schemas to declare, no complex configuration—just events and listeners.
 go get github.com/zoobzio/capitan
 ```
 
-Requires Go 1.23+.
+Requires Go 1.24+.
 
 ## Quick Start
 

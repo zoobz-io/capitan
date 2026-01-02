@@ -1,6 +1,13 @@
+version: "2"
+
 run:
   timeout: 5m
   tests: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 
 linters:
   enable:
@@ -16,7 +23,6 @@ linters:
     - ineffassign  # Detect ineffectual assignments
     - staticcheck  # Advanced static analysis
     - unused       # Unused code detection
-    - typecheck    # Type checking
 
     # Error handling
     - errcheck     # Unchecked errors
@@ -31,8 +37,6 @@ linters:
     - goconst      # Repeated strings as constants
     - godot        # Comment sentences
     - godox        # TODO/FIXME comments
-    - gofmt        # Formatting
-    - goimports    # Import organization
     - misspell     # Spelling mistakes
     - nakedret     # Naked returns
     - prealloc     # Slice capacity hints
@@ -165,6 +169,14 @@ issues:
         - dupl
         - govet
         - errcheck
+
+    # Testing package helpers can have longer functions
+    - path: testing/
+      linters:
+        - funlen
+        - goconst
+        - dupl
+        - revive
 
   # Maximum issues count per one linter
   max-issues-per-linter: 0

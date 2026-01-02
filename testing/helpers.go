@@ -229,7 +229,7 @@ func TestCapitan(opts ...capitan.Option) *capitan.Capitan {
 	return capitan.New(opts...)
 }
 
-// WaitForStats polls stats until a condition is met or timeout occurs.
+// StatsWaiter polls stats until a condition is met or timeout occurs.
 // Useful for testing async worker creation and queue draining.
 type StatsWaiter struct {
 	capitan *capitan.Capitan

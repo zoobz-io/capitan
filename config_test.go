@@ -1000,7 +1000,9 @@ func TestRebuildWorkerWithRateLimit(t *testing.T) {
 	// Drain to ensure rebuild completes
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	c.Drain(ctx)
+	if err := c.Drain(ctx); err != nil {
+		t.Fatalf("drain failed: %v", err)
+	}
 
 	// Verify worker has rate limiter configured
 	c.mu.RLock()
@@ -1076,7 +1078,9 @@ func TestMinSeverityFilteringInWorker(t *testing.T) {
 	// Drain
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	c.Drain(ctx)
+	if err := c.Drain(ctx); err != nil {
+		t.Fatalf("drain failed: %v", err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1111,7 +1115,9 @@ func TestPanicHandlerInWorker(t *testing.T) {
 	// Drain to ensure event is processed
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	c.Drain(ctx)
+	if err := c.Drain(ctx); err != nil {
+		t.Fatalf("drain failed: %v", err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1173,7 +1179,9 @@ func TestRateLimitWithDefaultBurst(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	c.Drain(ctx)
+	if err := c.Drain(ctx); err != nil {
+		t.Fatalf("drain failed: %v", err)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1213,7 +1221,9 @@ func TestRebuildWorkerWithDefaultBurst(t *testing.T) {
 	// Drain
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	c.Drain(ctx)
+	if err := c.Drain(ctx); err != nil {
+		t.Fatalf("drain failed: %v", err)
+	}
 
 	// Worker should have been rebuilt with rate limiter
 	c.mu.RLock()

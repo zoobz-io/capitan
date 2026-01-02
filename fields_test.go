@@ -6,6 +6,8 @@ import (
 	"testing"
 )
 
+const valueKeyName = "value"
+
 func TestStringKey(t *testing.T) {
 	key := NewStringKey("test")
 
@@ -20,7 +22,7 @@ func TestStringKey(t *testing.T) {
 
 func TestStringField(t *testing.T) {
 	key := NewStringKey("name")
-	field := key.Field("hello")
+	field := key.Field(helloValue)
 
 	if field.Key().Name() != "name" {
 		t.Errorf("expected key name %q, got %q", "name", field.Key().Name())
@@ -30,7 +32,7 @@ func TestStringField(t *testing.T) {
 		t.Errorf("expected variant %v, got %v", VariantString, field.Variant())
 	}
 
-	if field.Value() != "hello" {
+	if field.Value() != helloValue {
 		t.Errorf("expected value %q, got %v", "hello", field.Value())
 	}
 
@@ -39,7 +41,7 @@ func TestStringField(t *testing.T) {
 		t.Fatal("field not GenericField[string] type")
 	}
 
-	if sf.Get() != "hello" {
+	if sf.Get() != helloValue {
 		t.Errorf("expected %q, got %q", "hello", sf.Get())
 	}
 }
@@ -185,7 +187,7 @@ func TestAllFieldTypes(t *testing.T) {
 	})
 
 	c.Emit(context.Background(), sig,
-		strKey.Field("hello"),
+		strKey.Field(helloValue),
 		intKey.Field(42),
 		floatKey.Field(3.14),
 		boolKey.Field(true),
@@ -193,7 +195,7 @@ func TestAllFieldTypes(t *testing.T) {
 
 	wg.Wait()
 
-	if receivedStr != "hello" {
+	if receivedStr != helloValue {
 		t.Errorf("string: expected %q, got %q", "hello", receivedStr)
 	}
 	if receivedInt != 42 {
@@ -464,7 +466,7 @@ func TestFromTypeMismatch(t *testing.T) {
 
 		// Event has string field named "data"
 		str, ok := strKey.From(e)
-		if !ok || str != "hello" {
+		if !ok || str != helloValue {
 			t.Errorf("StringKey.From: expected %q (ok=true), got %q (ok=%v)", "hello", str, ok)
 		}
 
@@ -475,14 +477,14 @@ func TestFromTypeMismatch(t *testing.T) {
 		}
 	})
 
-	c.Emit(context.Background(), sig, strKey.Field("hello"))
+	c.Emit(context.Background(), sig, strKey.Field(helloValue))
 
 	wg.Wait()
 }
 
 func TestInt32Key(t *testing.T) {
-	key := NewInt32Key("value")
-	if key.Name() != "value" {
+	key := NewInt32Key(valueKeyName)
+	if key.Name() != valueKeyName {
 		t.Errorf("expected name %q, got %q", "value", key.Name())
 	}
 	if key.Variant() != VariantInt32 {
@@ -495,8 +497,8 @@ func TestInt32Key(t *testing.T) {
 }
 
 func TestInt64Key(t *testing.T) {
-	key := NewInt64Key("value")
-	if key.Name() != "value" {
+	key := NewInt64Key(valueKeyName)
+	if key.Name() != valueKeyName {
 		t.Errorf("expected name %q, got %q", "value", key.Name())
 	}
 	if key.Variant() != VariantInt64 {
@@ -509,8 +511,8 @@ func TestInt64Key(t *testing.T) {
 }
 
 func TestUintKey(t *testing.T) {
-	key := NewUintKey("value")
-	if key.Name() != "value" {
+	key := NewUintKey(valueKeyName)
+	if key.Name() != valueKeyName {
 		t.Errorf("expected name %q, got %q", "value", key.Name())
 	}
 	if key.Variant() != VariantUint {
@@ -523,8 +525,8 @@ func TestUintKey(t *testing.T) {
 }
 
 func TestUint32Key(t *testing.T) {
-	key := NewUint32Key("value")
-	if key.Name() != "value" {
+	key := NewUint32Key(valueKeyName)
+	if key.Name() != valueKeyName {
 		t.Errorf("expected name %q, got %q", "value", key.Name())
 	}
 	if key.Variant() != VariantUint32 {
@@ -537,8 +539,8 @@ func TestUint32Key(t *testing.T) {
 }
 
 func TestUint64Key(t *testing.T) {
-	key := NewUint64Key("value")
-	if key.Name() != "value" {
+	key := NewUint64Key(valueKeyName)
+	if key.Name() != valueKeyName {
 		t.Errorf("expected name %q, got %q", "value", key.Name())
 	}
 	if key.Variant() != VariantUint64 {
@@ -551,8 +553,8 @@ func TestUint64Key(t *testing.T) {
 }
 
 func TestFloat32Key(t *testing.T) {
-	key := NewFloat32Key("value")
-	if key.Name() != "value" {
+	key := NewFloat32Key(valueKeyName)
+	if key.Name() != valueKeyName {
 		t.Errorf("expected name %q, got %q", "value", key.Name())
 	}
 	if key.Variant() != VariantFloat32 {

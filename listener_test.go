@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const firstValue = "first"
+
 func TestListenerClose(t *testing.T) {
 	c := New(WithSyncMode())
 	defer c.Shutdown()
@@ -22,7 +24,7 @@ func TestListenerClose(t *testing.T) {
 		count++
 	})
 
-	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field(firstValue))
 
 	// Close listener
 	listener.Close()
@@ -95,7 +97,7 @@ func TestObserverClose(t *testing.T) {
 		count++
 	})
 
-	c.Emit(context.Background(), sig1, key.Field("first"))
+	c.Emit(context.Background(), sig1, key.Field(firstValue))
 	c.Emit(context.Background(), sig2, key.Field("second"))
 
 	// Close observer
@@ -151,7 +153,7 @@ func TestObserverSnapshotBehavior(_ *testing.T) {
 	// Create second signal after observer created
 	c.Hook(sig2, func(_ context.Context, _ *Event) {})
 
-	c.Emit(context.Background(), sig1, key.Field("first"))
+	c.Emit(context.Background(), sig1, key.Field(firstValue))
 	c.Emit(context.Background(), sig2, key.Field("second"))
 
 	// Should only receive sig1
@@ -191,7 +193,7 @@ func TestObserverReceivesAllExistingSignals(t *testing.T) {
 		received[e.Signal()] = true
 	})
 
-	c.Emit(context.Background(), sig1, key.Field("first"))
+	c.Emit(context.Background(), sig1, key.Field(firstValue))
 	c.Emit(context.Background(), sig2, key.Field("second"))
 	c.Emit(context.Background(), sig3, key.Field("third"))
 
@@ -333,7 +335,7 @@ func TestEmitToClosedWorkerDropsEvent(t *testing.T) {
 
 	// Emit first event - should be received
 	wg.Add(1)
-	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field(firstValue))
 	wg.Wait()
 
 	// Close listener
@@ -370,7 +372,7 @@ func TestHookOnceFiresOnlyOnce(t *testing.T) {
 	})
 
 	// Emit multiple events
-	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field(firstValue))
 	c.Emit(context.Background(), sig, key.Field("second"))
 	c.Emit(context.Background(), sig, key.Field("third"))
 
@@ -392,10 +394,10 @@ func TestHookOnceReceivesCorrectEvent(t *testing.T) {
 		received, _ = key.From(e)
 	})
 
-	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field(firstValue))
 	c.Emit(context.Background(), sig, key.Field("second"))
 
-	if received != "first" {
+	if received != firstValue {
 		t.Errorf("expected 'first', got '%s'", received)
 	}
 }
@@ -417,7 +419,7 @@ func TestHookOnceCloseBeforeFiring(t *testing.T) {
 	listener.Close()
 
 	// Emit events - should not be received
-	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field(firstValue))
 	c.Emit(context.Background(), sig, key.Field("second"))
 
 	if count != 0 {
@@ -435,7 +437,7 @@ func TestHookOnceCloseIdempotent(_ *testing.T) {
 	listener := c.HookOnce(sig, func(_ context.Context, _ *Event) {})
 
 	// Emit to trigger auto-close
-	c.Emit(context.Background(), sig, key.Field("first"))
+	c.Emit(context.Background(), sig, key.Field(firstValue))
 
 	// Give time for async close
 	time.Sleep(10 * time.Millisecond)
@@ -527,7 +529,7 @@ func TestModuleLevelHookOnce(t *testing.T) {
 		count++
 	})
 
-	Emit(context.Background(), sig, key.Field("first"))
+	Emit(context.Background(), sig, key.Field(firstValue))
 	Emit(context.Background(), sig, key.Field("second"))
 
 	if count != 1 {
@@ -992,7 +994,7 @@ func TestListenerDrainWorkerDone(t *testing.T) {
 		// Give listener1 time to start closing
 		time.Sleep(10 * time.Millisecond)
 		// This should handle the worker being done
-		listener2.Drain(context.Background())
+		_ = listener2.Drain(context.Background())
 		listener2.Close()
 	}()
 
@@ -1038,7 +1040,7 @@ func TestListenerDrainDuringShutdown(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			listener.Drain(context.Background())
+			_ = listener.Drain(context.Background())
 		}()
 
 		go func() {
@@ -1087,7 +1089,7 @@ func TestListenerDrainConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			listener.Drain(context.Background())
+			_ = listener.Drain(context.Background())
 		}()
 	}
 	wg.Wait()
@@ -1341,7 +1343,7 @@ func TestListenerDrainWorkerDoneRace(t *testing.T) {
 			defer wg.Done()
 			// Small delay to increase chance of hitting worker.done case
 			time.Sleep(time.Microsecond * time.Duration(i%10))
-			listener.Drain(context.Background())
+			_ = listener.Drain(context.Background())
 		}()
 
 		// Unblock after a bit
@@ -1394,7 +1396,7 @@ func TestListenerDrainShutdownRace(t *testing.T) {
 
 		go func() {
 			defer wg.Done()
-			listener.Drain(context.Background())
+			_ = listener.Drain(context.Background())
 		}()
 
 		done := make(chan struct{})
@@ -1473,14 +1475,14 @@ func TestListenerDrainWorkerDoneViaConfigDisable(t *testing.T) {
 		// Goroutine 1: Drain (will block trying to send marker)
 		go func() {
 			defer wg.Done()
-			listener.Drain(context.Background())
+			_ = listener.Drain(context.Background())
 		}()
 
 		// Goroutine 2: Disable the signal via config (closes worker.done)
 		go func() {
 			defer wg.Done()
 			time.Sleep(10 * time.Millisecond)
-			c.ApplyConfig(Config{
+			_ = c.ApplyConfig(Config{
 				Signals: map[string]SignalConfig{
 					sig.Name(): {Disabled: true},
 				},
@@ -1534,7 +1536,7 @@ func TestObserverDrainConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			observer.Drain(context.Background())
+			_ = observer.Drain(context.Background())
 		}()
 	}
 	wg.Wait()
