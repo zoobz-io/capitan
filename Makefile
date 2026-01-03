@@ -72,7 +72,7 @@ clean:
 # Install development tools
 install-tools:
 	@echo "Installing development tools..."
-	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@v2.1.6
 
 # Install git hooks
 install-hooks:
