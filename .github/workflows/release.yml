@@ -39,6 +39,7 @@ jobs:
       - name: Run linting
         uses: golangci/golangci-lint-action@v7
         with:
+          version: v2.7.2
           args: --config=.golangci.yml --timeout=5m
 
   release:
