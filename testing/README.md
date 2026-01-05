@@ -10,8 +10,6 @@ testing/
 ├── helpers.go            # Shared test utilities and mocks
 ├── integration/          # Integration and end-to-end tests
 │   ├── README.md        # Integration testing documentation
-│   ├── event_flows_test.go          # Event emission and propagation tests
-│   ├── resilience_test.go           # Panic recovery and error handling
 │   ├── real_world_test.go           # Real-world scenario tests
 │   └── concurrency_test.go          # Concurrent access patterns
 └── benchmarks/          # Performance benchmarks

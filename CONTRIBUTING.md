@@ -10,13 +10,14 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 1. Fork the repository
 2. Clone your fork: `git clone https://github.com/yourusername/capitan.git`
-3. Create a feature branch: `git checkout -b feature/your-feature-name`
-4. Make your changes
-5. Run tests: `make test`
-6. Run linters: `make lint`
-7. Commit your changes with a descriptive message
-8. Push to your fork: `git push origin feature/your-feature-name`
-9. Create a Pull Request
+3. Run `make help` to see available commands
+4. Create a feature branch: `git checkout -b feature/your-feature-name`
+5. Make your changes
+6. Run tests: `make test`
+7. Run linters: `make lint`
+8. Commit your changes with a descriptive message
+9. Push to your fork: `git push origin feature/your-feature-name`
+10. Create a Pull Request
 
 ## Development Guidelines
 

@@ -13,24 +13,42 @@ Type-safe event coordination for Go with zero dependencies.
 
 Emit events with typed fields, hook listeners, and let capitan handle the rest with async processing and backpressure.
 
-## Three Operations
+## Send a Signal, Listen Anywhere
+
+Events carry typed fields with compile-time safety.
 
 ```go
-// Emit an event
-capitan.Emit(ctx, signal, fields...)
+// Define typed keys
+orderID := capitan.NewStringKey("order_id")
+total   := capitan.NewFloat64Key("total")
 
-// Hook a listener
-listener := capitan.Hook(signal, func(ctx context.Context, e *capitan.Event) {
-    // Handle event
+// Define a signal
+orderCreated := capitan.NewSignal("order.created", "New order placed")
+
+// Emit with typed fields
+capitan.Emit(ctx, orderCreated,
+    orderID.Field("ORD-123"),
+    total.Field(99.99),
+)
+```
+
+Each signal queues to its own worker — isolated, async, backpressure-aware.
+
+```go
+// Hook a listener — extract typed values directly
+capitan.Hook(orderCreated, func(ctx context.Context, e *capitan.Event) {
+    id, _ := orderID.From(e)      // string
+    amount, _ := total.From(e)    // float64
+    process(id, amount)
 })
 
-// Observe all signals
-observer := capitan.Observe(func(ctx context.Context, e *capitan.Event) {
-    // Handle any event
+// Observe all signals — unified visibility across the system
+capitan.Observe(func(ctx context.Context, e *capitan.Event) {
+    log.Info("event", "signal", e.Signal().Name())
 })
 ```
 
-No schemas to declare, no complex configuration—just events and listeners.
+Type-safe at the edges. Async and isolated in between.
 
 ## Installation
 
@@ -77,34 +95,16 @@ func main() {
 }
 ```
 
-## Custom Types
+## Capabilities
 
-Any type works with full type safety using `NewKey[T]`:
-
-```go
-type Order struct {
-    ID       string
-    Customer string
-    Total    float64
-    Items    int
-}
-
-var orderKey = capitan.NewKey[Order]("order", "myapp.Order")
-
-capitan.Hook(orderCreated, func(ctx context.Context, e *capitan.Event) {
-    order, ok := orderKey.From(e)  // order is type Order, not any
-    if ok {
-        fmt.Printf("%s ordered %d items ($%.2f)\n", order.Customer, order.Items, order.Total)
-    }
-})
-
-capitan.Emit(ctx, orderCreated, orderKey.Field(Order{
-    ID:       "ORD-456",
-    Customer: "Alice",
-    Total:    149.99,
-    Items:    3,
-}))
-```
+| Feature            | Description                                                   | Docs                                                |
+| ------------------ | ------------------------------------------------------------- | --------------------------------------------------- |
+| Typed Fields       | Built-in keys for primitives; `NewKey[T]` for any custom type | [Fields](docs/5.reference/2.fields.md)              |
+| Per-Signal Workers | Each signal gets its own goroutine and buffered queue         | [Architecture](docs/2.learn/3.architecture.md)      |
+| Observers          | Cross-cutting handlers that see all signals (or a whitelist)  | [Concepts](docs/2.learn/2.concepts.md)              |
+| Configuration      | Buffer sizes, rate limits, drop policies, panic handlers      | [Configuration](docs/3.guides/1.configuration.md)   |
+| Graceful Shutdown  | Drain pending events before exit                              | [Best Practices](docs/3.guides/5.best-practices.md) |
+| Testing Utilities  | Sync mode, event capture, isolated instances                  | [Testing](docs/3.guides/4.testing.md)               |
 
 ## Why capitan?
 
@@ -115,16 +115,37 @@ capitan.Emit(ctx, orderCreated, orderKey.Field(Order{
 - **Panic-safe** — Listener panics recovered, system stays running
 - **Testable** — Sync mode and capture utilities for deterministic tests
 
+## Decoupled Coordination
+
+Capitan enables a pattern: **packages emit, concerned parties listen, services observe**.
+
+Your domain packages emit events when meaningful things happen. Other packages hook the signals they care about. Service-level concerns — audit trails, structured logging, metrics collection — observe everything through a unified stream.
+
+```go
+// In your order package
+capitan.Emit(ctx, orderCreated, orderID.Field(id), total.Field(amount))
+
+// In your notification package
+capitan.Hook(orderCreated, sendConfirmationEmail)
+
+// In your audit service
+capitan.Observe(writeToAuditLog)
+```
+
+Three packages, one event flow, zero direct imports between them.
+
 ## Documentation
 
 Full documentation is available in the [docs/](docs/) directory:
 
 ### Learn
+
 - [Quickstart](docs/2.learn/1.quickstart.md) — Get started in minutes
 - [Core Concepts](docs/2.learn/2.concepts.md) — Signals, keys, fields, listeners, observers
 - [Architecture](docs/2.learn/3.architecture.md) — Per-signal workers, event pooling, backpressure
 
 ### Guides
+
 - [Configuration](docs/3.guides/1.configuration.md) — Buffer sizes, panic handlers, runtime metrics
 - [Context](docs/3.guides/2.context.md) — Request tracing, cancellation, timeouts
 - [Errors](docs/3.guides/3.errors.md) — Error propagation, severity levels, retry patterns
@@ -132,22 +153,21 @@ Full documentation is available in the [docs/](docs/) directory:
 - [Best Practices](docs/3.guides/5.best-practices.md) — Signal design, listener lifecycle, performance
 
 ### Cookbook
+
 - [Observability](docs/4.cookbook/1.observability.md) — Centralized logging without coupling
 - [Workflows](docs/4.cookbook/2.workflows.md) — Event-driven choreography
 - [Distribution](docs/4.cookbook/3.distribution.md) — Kafka, NATS, and message broker integration
 - [Persistence](docs/4.cookbook/4.persistence.md) — Event storage and replay
 
 ### Reference
+
 - [API Reference](docs/5.reference/1.api.md) — Complete function and type documentation
 - [Fields Reference](docs/5.reference/2.fields.md) — All built-in and custom field types
 - [Testing Reference](docs/5.reference/3.testing.md) — Test utilities API
 
 ## Contributing
 
-Contributions welcome! Please ensure:
-- Tests pass: `go test ./...`
-- Code is formatted: `go fmt ./...`
-- No lint errors: `golangci-lint run`
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. Run `make help` for available commands.
 
 ## License
 

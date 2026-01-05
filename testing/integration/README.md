@@ -4,21 +4,6 @@ This directory contains integration tests that verify how capitan components wor
 
 ## Test Categories
 
-### Event Flow Tests (`event_flows_test.go`)
-Tests fundamental event coordination patterns:
-- Multiple signals with shared observers
-- Dynamic signal creation and observer attachment
-- Event propagation through complex listener networks
-- Field passing through multi-stage processing
-
-### Resilience Tests (`resilience_test.go`)
-Tests how capitan handles failures and edge cases:
-- Panic recovery in listeners
-- Context cancellation propagation
-- Listener removal during emission
-- Observer closure during event processing
-- Shutdown with pending events
-
 ### Real-World Scenario Tests (`real_world_test.go`)
 Tests realistic application scenarios:
 - Audit logging system
