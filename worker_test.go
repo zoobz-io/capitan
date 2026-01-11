@@ -965,3 +965,263 @@ func TestDrainContextCancelledDuringMarkerWait(t *testing.T) {
 	close(block)
 	c.Shutdown()
 }
+
+// --- Listener Version Caching Tests ---
+
+func TestListenerVersionIncrementsOnHook(t *testing.T) {
+	c := New()
+	defer c.Shutdown()
+
+	sig := NewSignal("test.version.hook", "Test version increment on hook")
+
+	c.mu.RLock()
+	initialVersion := c.listenerVersions[sig]
+	c.mu.RUnlock()
+
+	if initialVersion != 0 {
+		t.Errorf("expected initial version 0, got %d", initialVersion)
+	}
+
+	// Hook first listener
+	l1 := c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	c.mu.RLock()
+	versionAfterFirst := c.listenerVersions[sig]
+	c.mu.RUnlock()
+
+	if versionAfterFirst != 1 {
+		t.Errorf("expected version 1 after first hook, got %d", versionAfterFirst)
+	}
+
+	// Hook second listener
+	c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	c.mu.RLock()
+	versionAfterSecond := c.listenerVersions[sig]
+	c.mu.RUnlock()
+
+	if versionAfterSecond != 2 {
+		t.Errorf("expected version 2 after second hook, got %d", versionAfterSecond)
+	}
+
+	l1.Close()
+}
+
+func TestListenerVersionIncrementsOnClose(t *testing.T) {
+	c := New()
+	defer c.Shutdown()
+
+	sig := NewSignal("test.version.close", "Test version increment on close")
+
+	l1 := c.Hook(sig, func(_ context.Context, _ *Event) {})
+	l2 := c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	c.mu.RLock()
+	versionBeforeClose := c.listenerVersions[sig]
+	c.mu.RUnlock()
+
+	if versionBeforeClose != 2 {
+		t.Errorf("expected version 2 after hooks, got %d", versionBeforeClose)
+	}
+
+	// Close first listener
+	l1.Close()
+
+	c.mu.RLock()
+	versionAfterFirstClose := c.listenerVersions[sig]
+	c.mu.RUnlock()
+
+	if versionAfterFirstClose != 3 {
+		t.Errorf("expected version 3 after first close, got %d", versionAfterFirstClose)
+	}
+
+	// Close second listener (signal entry is deleted when no listeners remain)
+	l2.Close()
+
+	c.mu.RLock()
+	_, exists := c.listenerVersions[sig]
+	c.mu.RUnlock()
+
+	if exists {
+		t.Error("expected listenerVersions entry to be deleted when all listeners removed")
+	}
+}
+
+func TestListenerVersionIncrementsOnObserve(t *testing.T) {
+	c := New()
+	defer c.Shutdown()
+
+	sig := NewSignal("test.version.observe", "Test version increment on observe")
+
+	// Hook a listener to create the signal entry
+	c.Hook(sig, func(_ context.Context, _ *Event) {})
+
+	c.mu.RLock()
+	versionBeforeObserve := c.listenerVersions[sig]
+	c.mu.RUnlock()
+
+	if versionBeforeObserve != 1 {
+		t.Errorf("expected version 1 after hook, got %d", versionBeforeObserve)
+	}
+
+	// Observe adds listeners to existing signals
+	c.Observe(func(_ context.Context, _ *Event) {})
+
+	c.mu.RLock()
+	versionAfterObserve := c.listenerVersions[sig]
+	c.mu.RUnlock()
+
+	if versionAfterObserve != 2 {
+		t.Errorf("expected version 2 after observe, got %d", versionAfterObserve)
+	}
+}
+
+func TestWorkerCachesListeners(t *testing.T) {
+	c := New()
+	defer c.Shutdown()
+
+	sig := NewSignal("test.cache.listeners", "Test worker caches listeners")
+	key := NewIntKey("value")
+
+	var invokedCount int32
+	var wg sync.WaitGroup
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&invokedCount, 1)
+		wg.Done()
+	})
+
+	// Emit multiple events - worker should cache listeners after first event
+	const numEvents = 10
+	wg.Add(numEvents)
+
+	for i := 0; i < numEvents; i++ {
+		c.Emit(context.Background(), sig, key.Field(i))
+	}
+
+	wg.Wait()
+
+	if atomic.LoadInt32(&invokedCount) != numEvents {
+		t.Errorf("expected %d invocations, got %d", numEvents, invokedCount)
+	}
+
+	// Verify worker has cached listeners
+	c.mu.RLock()
+	worker, exists := c.workers[sig]
+	c.mu.RUnlock()
+
+	if !exists {
+		t.Fatal("worker should exist")
+	}
+
+	if worker.cachedListeners == nil {
+		t.Error("worker should have cached listeners")
+	}
+
+	if len(worker.cachedListeners) != 1 {
+		t.Errorf("expected 1 cached listener, got %d", len(worker.cachedListeners))
+	}
+}
+
+func TestWorkerUpdatesCacheOnListenerChange(t *testing.T) {
+	c := New()
+	defer c.Shutdown()
+
+	sig := NewSignal("test.cache.update", "Test worker updates cache on change")
+	key := NewIntKey("value")
+
+	var count1, count2 int32
+	var wg sync.WaitGroup
+
+	l1 := c.Hook(sig, func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count1, 1)
+		wg.Done()
+	})
+
+	// Emit first event
+	wg.Add(1)
+	c.Emit(context.Background(), sig, key.Field(1))
+	wg.Wait()
+
+	// Verify initial cache state
+	c.mu.RLock()
+	worker := c.workers[sig]
+	initialCacheLen := len(worker.cachedListeners)
+	initialVersion := worker.listenerVersion
+	c.mu.RUnlock()
+
+	if initialCacheLen != 1 {
+		t.Errorf("expected 1 cached listener initially, got %d", initialCacheLen)
+	}
+
+	// Add second listener (this increments version)
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		atomic.AddInt32(&count2, 1)
+		wg.Done()
+	})
+
+	// Emit another event - worker should detect version change and update cache
+	wg.Add(2) // Both listeners will fire
+	c.Emit(context.Background(), sig, key.Field(2))
+	wg.Wait()
+
+	// Verify cache was updated
+	c.mu.RLock()
+	updatedCacheLen := len(worker.cachedListeners)
+	updatedVersion := worker.listenerVersion
+	c.mu.RUnlock()
+
+	if updatedCacheLen != 2 {
+		t.Errorf("expected 2 cached listeners after add, got %d", updatedCacheLen)
+	}
+
+	if updatedVersion <= initialVersion {
+		t.Errorf("expected version to increase, was %d now %d", initialVersion, updatedVersion)
+	}
+
+	// Close first listener
+	l1.Close()
+
+	// Emit another event - worker should detect version change
+	wg.Add(1) // Only second listener will fire
+	c.Emit(context.Background(), sig, key.Field(3))
+	wg.Wait()
+
+	// Verify cache was updated after removal
+	c.mu.RLock()
+	finalCacheLen := len(worker.cachedListeners)
+	c.mu.RUnlock()
+
+	if finalCacheLen != 1 {
+		t.Errorf("expected 1 cached listener after removal, got %d", finalCacheLen)
+	}
+}
+
+func TestWorkerCacheVersionMatchesCapitanVersion(t *testing.T) {
+	c := New()
+	defer c.Shutdown()
+
+	sig := NewSignal("test.cache.version.sync", "Test cache version synchronization")
+	key := NewIntKey("value")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	c.Hook(sig, func(_ context.Context, _ *Event) {
+		wg.Done()
+	})
+
+	c.Emit(context.Background(), sig, key.Field(1))
+	wg.Wait()
+
+	// Verify versions match
+	c.mu.RLock()
+	capitanVersion := c.listenerVersions[sig]
+	worker := c.workers[sig]
+	workerVersion := worker.listenerVersion
+	c.mu.RUnlock()
+
+	if capitanVersion != workerVersion {
+		t.Errorf("version mismatch: capitan=%d, worker=%d", capitanVersion, workerVersion)
+	}
+}

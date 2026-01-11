@@ -152,6 +152,10 @@ type workerState struct {
 	// Per-signal configuration (resolved once at worker creation)
 	config      SignalConfig
 	rateLimiter rateLimiter
+
+	// Cached listener slice to avoid allocation on every event
+	cachedListeners []*Listener
+	listenerVersion uint64
 }
 
 // rateLimiter implements a token bucket for rate limiting events.

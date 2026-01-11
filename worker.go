@@ -318,10 +318,14 @@ func (c *Capitan) processWorkerEvent(signal Signal, state *workerState, event *E
 		}
 	}
 
-	// Copy listener slice while holding lock
+	// Copy listener slice only if version changed
 	c.mu.RLock()
-	listeners := make([]*Listener, len(c.registry[signal]))
-	copy(listeners, c.registry[signal])
+	if state.listenerVersion != c.listenerVersions[signal] {
+		state.cachedListeners = make([]*Listener, len(c.registry[signal]))
+		copy(state.cachedListeners, c.registry[signal])
+		state.listenerVersion = c.listenerVersions[signal]
+	}
+	listeners := state.cachedListeners
 	c.mu.RUnlock()
 
 	// Invoke all listeners with panic recovery

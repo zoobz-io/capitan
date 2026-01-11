@@ -168,6 +168,7 @@ func (c *Capitan) Observe(callback EventCallback, signals ...Signal) *Observer {
 			capitan:  c,
 		}
 		c.registry[signal] = append(c.registry[signal], listener)
+		c.listenerVersions[signal]++
 		o.listeners = append(o.listeners, listener)
 	}
 
@@ -197,6 +198,7 @@ func (c *Capitan) attachObservers(signal Signal) {
 				capitan:  c,
 			}
 			c.registry[signal] = append(c.registry[signal], obsListener)
+			c.listenerVersions[signal]++
 			obs.listeners = append(obs.listeners, obsListener)
 		}
 		obs.mu.Unlock()

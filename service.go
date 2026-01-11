@@ -19,19 +19,20 @@ var (
 // Use New to create isolated instances, or the module-level functions
 // (Emit, Hook, Observe, Shutdown) to use the default singleton.
 type Capitan struct {
-	registry      map[Signal][]*Listener
-	workers       map[Signal]*workerState
-	observers     []*Observer
-	shutdown      chan struct{}
-	shutdownOnce  sync.Once
-	wg            sync.WaitGroup
-	mu            sync.RWMutex
-	bufferSize    int
-	panicHandler  PanicHandler
-	syncMode      bool
-	emitCounts    map[Signal]uint64
-	droppedEvents uint64
-	fieldSchemas  map[Signal][]Key
+	registry         map[Signal][]*Listener
+	workers          map[Signal]*workerState
+	observers        []*Observer
+	shutdown         chan struct{}
+	shutdownOnce     sync.Once
+	wg               sync.WaitGroup
+	mu               sync.RWMutex
+	bufferSize       int
+	panicHandler     PanicHandler
+	syncMode         bool
+	emitCounts       map[Signal]uint64
+	droppedEvents    uint64
+	fieldSchemas     map[Signal][]Key
+	listenerVersions map[Signal]uint64
 
 	// Per-signal configuration (single source of truth)
 	config Config
@@ -41,13 +42,14 @@ type Capitan struct {
 // If no options are provided, sensible defaults are used (bufferSize=16, no panic handler).
 func New(opts ...Option) *Capitan {
 	c := &Capitan{
-		registry:     make(map[Signal][]*Listener),
-		workers:      make(map[Signal]*workerState),
-		shutdown:     make(chan struct{}),
-		bufferSize:   16, // default buffer size
-		emitCounts:   make(map[Signal]uint64),
-		fieldSchemas: make(map[Signal][]Key),
-		config:       Config{Signals: make(map[string]SignalConfig)},
+		registry:         make(map[Signal][]*Listener),
+		workers:          make(map[Signal]*workerState),
+		shutdown:         make(chan struct{}),
+		bufferSize:       16, // default buffer size
+		emitCounts:       make(map[Signal]uint64),
+		fieldSchemas:     make(map[Signal][]Key),
+		listenerVersions: make(map[Signal]uint64),
+		config:           Config{Signals: make(map[string]SignalConfig)},
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -110,6 +112,7 @@ func (c *Capitan) Hook(signal Signal, callback EventCallback) *Listener {
 	// Check if this is a new signal
 	_, exists := c.registry[signal]
 	c.registry[signal] = append(c.registry[signal], listener)
+	c.listenerVersions[signal]++
 
 	// If new signal, attach to all active observers
 	if !exists {
@@ -181,18 +184,21 @@ func (c *Capitan) unregister(listener *Listener) {
 
 	listeners := c.registry[listener.signal]
 	for i, l := range listeners {
-		if l == listener {
-			// Swap with last element and truncate (efficient removal)
-			lastIdx := len(listeners) - 1
-			listeners[i] = listeners[lastIdx]
-			c.registry[listener.signal] = listeners[:lastIdx]
-			break
+		if l != listener {
+			continue
 		}
+		// Swap with last element and truncate (efficient removal)
+		lastIdx := len(listeners) - 1
+		listeners[i] = listeners[lastIdx]
+		c.registry[listener.signal] = listeners[:lastIdx]
+		c.listenerVersions[listener.signal]++
+		break
 	}
 
 	// Clean up empty signal entries and signal worker to exit
 	if len(c.registry[listener.signal]) == 0 {
 		delete(c.registry, listener.signal)
+		delete(c.listenerVersions, listener.signal)
 
 		// Signal worker goroutine to drain and exit
 		if worker, exists := c.workers[listener.signal]; exists {
