@@ -99,12 +99,12 @@ func main() {
 
 | Feature            | Description                                                   | Docs                                                |
 | ------------------ | ------------------------------------------------------------- | --------------------------------------------------- |
-| Typed Fields       | Built-in keys for primitives; `NewKey[T]` for any custom type | [Fields](docs/5.reference/2.fields.md)              |
-| Per-Signal Workers | Each signal gets its own goroutine and buffered queue         | [Architecture](docs/2.learn/3.architecture.md)      |
-| Observers          | Cross-cutting handlers that see all signals (or a whitelist)  | [Concepts](docs/2.learn/2.concepts.md)              |
-| Configuration      | Buffer sizes, rate limits, drop policies, panic handlers      | [Configuration](docs/3.guides/1.configuration.md)   |
-| Graceful Shutdown  | Drain pending events before exit                              | [Best Practices](docs/3.guides/5.best-practices.md) |
-| Testing Utilities  | Sync mode, event capture, isolated instances                  | [Testing](docs/3.guides/4.testing.md)               |
+| Typed Fields       | Built-in keys for primitives; `NewKey[T]` for any custom type | [Fields](docs/4.reference/2.fields.md)              |
+| Per-Signal Workers | Each signal gets its own goroutine and buffered queue         | [Architecture](docs/1.learn/4.architecture.md)      |
+| Observers          | Cross-cutting handlers that see all signals (or a whitelist)  | [Concepts](docs/1.learn/3.concepts.md)              |
+| Configuration      | Buffer sizes, rate limits, drop policies, panic handlers      | [Configuration](docs/2.guides/1.configuration.md)   |
+| Graceful Shutdown  | Drain pending events before exit                              | [Best Practices](docs/2.guides/5.best-practices.md) |
+| Testing Utilities  | Sync mode, event capture, isolated instances                  | [Testing](docs/2.guides/4.testing.md)               |
 
 ## Why capitan?
 
@@ -140,30 +140,31 @@ Full documentation is available in the [docs/](docs/) directory:
 
 ### Learn
 
-- [Quickstart](docs/2.learn/1.quickstart.md) — Get started in minutes
-- [Core Concepts](docs/2.learn/2.concepts.md) — Signals, keys, fields, listeners, observers
-- [Architecture](docs/2.learn/3.architecture.md) — Per-signal workers, event pooling, backpressure
+- [Overview](docs/1.learn/1.overview.md) — What capitan provides
+- [Quickstart](docs/1.learn/2.quickstart.md) — Get started in minutes
+- [Core Concepts](docs/1.learn/3.concepts.md) — Signals, keys, fields, listeners, observers
+- [Architecture](docs/1.learn/4.architecture.md) — Per-signal workers, event pooling, backpressure
 
 ### Guides
 
-- [Configuration](docs/3.guides/1.configuration.md) — Buffer sizes, panic handlers, runtime metrics
-- [Context](docs/3.guides/2.context.md) — Request tracing, cancellation, timeouts
-- [Errors](docs/3.guides/3.errors.md) — Error propagation, severity levels, retry patterns
-- [Testing](docs/3.guides/4.testing.md) — Sync mode, event capture, isolated instances
-- [Best Practices](docs/3.guides/5.best-practices.md) — Signal design, listener lifecycle, performance
+- [Configuration](docs/2.guides/1.configuration.md) — Buffer sizes, panic handlers, runtime metrics
+- [Context](docs/2.guides/2.context.md) — Request tracing, cancellation, timeouts
+- [Errors](docs/2.guides/3.errors.md) — Error propagation, severity levels, retry patterns
+- [Testing](docs/2.guides/4.testing.md) — Sync mode, event capture, isolated instances
+- [Best Practices](docs/2.guides/5.best-practices.md) — Signal design, listener lifecycle, performance
+- [Persistence](docs/2.guides/6.persistence.md) — Event storage and replay
 
-### Cookbook
+### Integrations
 
-- [Observability](docs/4.cookbook/1.observability.md) — Centralized logging without coupling
-- [Workflows](docs/4.cookbook/2.workflows.md) — Event-driven choreography
-- [Distribution](docs/4.cookbook/3.distribution.md) — Kafka, NATS, and message broker integration
-- [Persistence](docs/4.cookbook/4.persistence.md) — Event storage and replay
+- [aperture](docs/3.integrations/1.aperture.md) — OpenTelemetry observability
+- [herald](docs/3.integrations/2.herald.md) — Message broker bridge (Kafka, NATS)
+- [ago](docs/3.integrations/3.ago.md) — Workflow orchestration *(Experimental)*
 
 ### Reference
 
-- [API Reference](docs/5.reference/1.api.md) — Complete function and type documentation
-- [Fields Reference](docs/5.reference/2.fields.md) — All built-in and custom field types
-- [Testing Reference](docs/5.reference/3.testing.md) — Test utilities API
+- [API Reference](docs/4.reference/1.api.md) — Complete function and type documentation
+- [Fields Reference](docs/4.reference/2.fields.md) — All built-in and custom field types
+- [Testing Reference](docs/4.reference/3.testing.md) — Test utilities API
 
 ## Contributing
 
