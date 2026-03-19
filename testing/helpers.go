@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zoobzio/capitan"
+	"github.com/zoobz-io/capitan"
 )
 
 // CapturedEvent represents a snapshot of an event for testing.

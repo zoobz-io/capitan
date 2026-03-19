@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zoobzio/capitan"
-	capitantesting "github.com/zoobzio/capitan/testing"
+	"github.com/zoobz-io/capitan"
+	capitantesting "github.com/zoobz-io/capitan/testing"
 )
 
 // TestConcurrency_MultipleGoroutinesEmitting tests concurrent event emission.

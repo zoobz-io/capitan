@@ -39,3 +39,6 @@ Thumbs.db
 
 # GoReleaser output directory
 .dist/
+
+# Claude
+.claude/
