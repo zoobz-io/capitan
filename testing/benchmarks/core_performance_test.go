@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/zoobzio/capitan"
+	"github.com/zoobz-io/capitan"
 )
 
 // BenchmarkEmit measures the performance of event emission.

@@ -1,13 +1,13 @@
 # capitan
 
-[![CI Status](https://github.com/zoobzio/capitan/workflows/CI/badge.svg)](https://github.com/zoobzio/capitan/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/zoobzio/capitan/graph/badge.svg?branch=main)](https://codecov.io/gh/zoobzio/capitan)
-[![Go Report Card](https://goreportcard.com/badge/github.com/zoobzio/capitan)](https://goreportcard.com/report/github.com/zoobzio/capitan)
-[![CodeQL](https://github.com/zoobzio/capitan/workflows/CodeQL/badge.svg)](https://github.com/zoobzio/capitan/security/code-scanning)
-[![Go Reference](https://pkg.go.dev/badge/github.com/zoobzio/capitan.svg)](https://pkg.go.dev/github.com/zoobzio/capitan)
-[![License](https://img.shields.io/github/license/zoobzio/capitan)](LICENSE)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/zoobzio/capitan)](go.mod)
-[![Release](https://img.shields.io/github/v/release/zoobzio/capitan)](https://github.com/zoobzio/capitan/releases)
+[![CI Status](https://github.com/zoobz-io/capitan/workflows/CI/badge.svg)](https://github.com/zoobz-io/capitan/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/zoobz-io/capitan/graph/badge.svg?branch=main)](https://codecov.io/gh/zoobz-io/capitan)
+[![Go Report Card](https://goreportcard.com/badge/github.com/zoobz-io/capitan)](https://goreportcard.com/report/github.com/zoobz-io/capitan)
+[![CodeQL](https://github.com/zoobz-io/capitan/workflows/CodeQL/badge.svg)](https://github.com/zoobz-io/capitan/security/code-scanning)
+[![Go Reference](https://pkg.go.dev/badge/github.com/zoobz-io/capitan.svg)](https://pkg.go.dev/github.com/zoobz-io/capitan)
+[![License](https://img.shields.io/github/license/zoobz-io/capitan)](LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/zoobz-io/capitan)](go.mod)
+[![Release](https://img.shields.io/github/v/release/zoobz-io/capitan)](https://github.com/zoobz-io/capitan/releases)
 
 Type-safe event coordination for Go with zero dependencies.
 
@@ -53,7 +53,7 @@ Type-safe at the edges. Async and isolated in between.
 ## Installation
 
 ```bash
-go get github.com/zoobzio/capitan
+go get github.com/zoobz-io/capitan
 ```
 
 Requires Go 1.24+.
@@ -66,7 +66,7 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/zoobzio/capitan"
+    "github.com/zoobz-io/capitan"
 )
 
 // Define signals and keys as package-level variables

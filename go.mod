@@ -1,4 +1,4 @@
-module github.com/zoobzio/capitan
+module github.com/zoobz-io/capitan
 
 go 1.24
 

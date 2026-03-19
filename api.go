@@ -20,7 +20,7 @@
 //	capitan.Emit(context.Background(), sig, orderID.Field("ORDER-123"))
 //	capitan.Shutdown() // Drain pending events
 //
-// See https://github.com/zoobzio/capitan for full documentation.
+// See https://github.com/zoobz-io/capitan for full documentation.
 package capitan
 
 // Signal represents an event type identifier used for routing events to listeners.

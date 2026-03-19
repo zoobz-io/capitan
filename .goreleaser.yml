@@ -81,7 +81,7 @@ release:
     ### Installation
 
     ```bash
-    go get github.com/zoobzio/capitan@v{{ .Version }}
+    go get github.com/zoobz-io/capitan@v{{ .Version }}
     ```
 
     ### Requirements
@@ -90,7 +90,7 @@ release:
   footer: |
     ---
 
-    **Full Documentation:** https://github.com/zoobzio/capitan/tree/v{{ .Version }}
+    **Full Documentation:** https://github.com/zoobz-io/capitan/tree/v{{ .Version }}
 
     Thanks to all contributors!
 
